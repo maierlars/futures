@@ -113,7 +113,7 @@ template <typename T>
 struct promise;
 
 struct promise_abandoned_error : std::exception {
-  const char* what() const noexcept override;
+  [[nodiscard]] const char* what() const noexcept override;
 };
 
 namespace handlers {
@@ -555,11 +555,24 @@ struct future_temporary
     }
     std::swap(_base, o._base);
   }
-  future_temporary& operator=(future_temporary&& o) noexcept = delete;  // TODO
+  future_temporary& operator=(future_temporary&& o) noexcept {
+    if (_base) {
+      std::move(*this).abandon();
+    }
+    detail::hard_assert(_base == nullptr);
+    detail::function_store<F>::operator=(std::move(o));
+    if constexpr (is_value_inlined) {
+      if (o.holds_inline_value()) {
+        detail::box<T>::emplace(o.cast_move());
+        o.destroy();
+      }
+    }
+    std::swap(_base, o._base);
+  }
 
   ~future_temporary() {
     if (_base) {
-      std::move(*this).finalize().abandon();
+      std::move(*this).abandon();
     }
   }
 
@@ -616,6 +629,7 @@ struct future_temporary
                                        detail::box<T>::cast_move()));
         static_assert(std::is_nothrow_destructible_v<T>);
         detail::box<T>::destroy();
+        _base.reset();
         return f;
       }
     }
@@ -670,10 +684,13 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   future& operator=(future&& o) noexcept {
+    if (_base) {
+      std::move(*this).abandon();
+    }
     detail::hard_assert(_base == nullptr);
     if (o.holds_inline_value()) {
       detail::box<T>::emplace(o.cast_move());
-      o.destroy();
+      o.destroy(); // o will have _base == nullptr
     }
     std::swap(_base, o._base);
   }
