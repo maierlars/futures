@@ -4,10 +4,14 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <type_traits>
 #include <utility>
 
+#include <condition_variable>
 #include <iostream>
+
+#include "expected.h"
 
 namespace futures {
 
@@ -19,20 +23,21 @@ struct no_deleter {
 };
 
 template <typename T>
-using fixed_ptr = std::unique_ptr<T, no_deleter<T>>;
+using fixed_ptr = std::unique_ptr<T, no_deleter<T>>;  // TODO find a better name
 
-struct invalid_pointer_type_inline_value {};
-struct invalid_pointer_type_future_abandoned {};
-struct invalid_pointer_type_promise_fulfilled {};
+struct invalid_pointer_type {};
 
-extern invalid_pointer_type_inline_value invalid_pointer_inline_value;
-extern invalid_pointer_type_future_abandoned invalid_pointer_future_abandoned;
-extern invalid_pointer_type_promise_fulfilled invalid_pointer_promise_fulfilled;
+extern invalid_pointer_type invalid_pointer_inline_value;
+extern invalid_pointer_type invalid_pointer_future_abandoned;
+extern invalid_pointer_type invalid_pointer_promise_abandoned;
+extern invalid_pointer_type invalid_pointer_promise_fulfilled;
 
 #define FUTURES_INVALID_POINTER_INLINE_VALUE(T) \
   reinterpret_cast<::futures::detail::continuation_base<T>*>(&detail::invalid_pointer_inline_value)
 #define FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T) \
   reinterpret_cast<::futures::detail::continuation<T>*>(&detail::invalid_pointer_future_abandoned)
+#define FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T) \
+  reinterpret_cast<::futures::detail::continuation<T>*>(&detail::invalid_pointer_promise_abandoned)
 #define FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T) \
   reinterpret_cast<::futures::detail::continuation<T>*>(&detail::invalid_pointer_promise_fulfilled)
 
@@ -70,10 +75,14 @@ struct box {
   T* operator->() { return ptr(); }
   T const* operator->() const { return ptr(); }
 
-  template<typename U = T, std::enable_if_t<std::is_move_constructible_v<U>, int> = 0>
-  T&& cast_move() { return std::move(ref()); }
-  template<typename U = T, std::enable_if_t<!std::is_move_constructible_v<U>, int> = 0>
-  T& cast_move() { return ref(); }
+  template <typename U = T, std::enable_if_t<std::is_move_constructible_v<U>, int> = 0>
+  T&& cast_move() {
+    return std::move(ref());
+  }
+  template <typename U = T, std::enable_if_t<!std::is_move_constructible_v<U>, int> = 0>
+  T& cast_move() {
+    return ref();
+  }
 
  private:
   alignas(T) std::array<std::byte, sizeof(T)> value;
@@ -98,20 +107,45 @@ struct small_box<T, std::enable_if_t<sizeof(T) <= 32>> : box<T> {
 
 }  // namespace detail
 
-template <typename T, typename = void>
+template <typename T>
 struct future;
 template <typename T>
 struct promise;
 
+struct promise_abandoned_error : std::exception {
+  const char* what() const noexcept override;
+};
 
 namespace handlers {
 
-template<typename T>
-struct allocation_failure {
-  void operator()(future<T>) noexcept { std::abort(); }
+template <typename T>
+struct abandoned_future_handler {
+  void operator()(T&&) noexcept {}
 };
 
-}
+template <typename T>
+struct abandoned_future_handler<expect::expected<T>> {
+  void operator()(expect::expected<T>&& e) noexcept {
+    if (e.has_error()) {
+      // LOGGING HERE!
+      std::abort();
+    }
+  }
+};
+
+template <typename T>
+struct abandoned_promise_handler {
+  T operator()() noexcept { std::abort(); }
+};
+
+template <typename T>
+struct abandoned_promise_handler<expect::expected<T>> {
+  expect::expected<T> operator()() {
+    return std::make_exception_ptr(promise_abandoned_error{});
+  }
+};
+
+}  // namespace handlers
 
 namespace detail {
 
@@ -135,6 +169,24 @@ void abandon_continuation(continuation_base<T>* base) noexcept {
                                            std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
     if (expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
+      static_assert(std::is_nothrow_destructible_v<T>);
+      // call abandoned_promise_handler
+      base->destroy();
+      delete base;
+    }
+  }
+}
+
+template <typename T>
+void abandon_promise(continuation_start<T>* base) noexcept {
+  continuation<T>* expected = nullptr;
+  if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T),
+                                           std::memory_order_release,
+                                           std::memory_order_acquire)) {  // ask mpoeter
+    if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
+      static_assert(std::is_nothrow_destructible_v<T>);
+      // call abandoned_promise_handler
+      std::abort();
       base->destroy();
       delete base;
     }
@@ -143,6 +195,8 @@ void abandon_continuation(continuation_base<T>* base) noexcept {
 
 template <typename T, typename... Args>
 auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {
+  static_assert(std::is_nothrow_constructible_v<T, Args...>,
+                "type should be nothrow constructable");
   auto frame = new (std::nothrow) T(std::forward<Args>(args)...);
   if (frame == nullptr) {
     std::abort();
@@ -156,13 +210,14 @@ inline void hard_assert(bool x) {
   }
 }
 
-template <typename T, typename F, typename G>
-void insert_continuation_final(continuation_base<T>* base, G&& f) noexcept {
+template <typename T, typename F>
+void insert_continuation_final(continuation_base<T>* base, F&& f) noexcept {
   static_assert(std::is_nothrow_invocable_r_v<void, F, T&&>);
+  static_assert(std::is_nothrow_destructible_v<T>);
   if (base->_next.load(std::memory_order_acquire) ==
       FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
     // short path
-    std::invoke(std::forward<G>(f), base->cast_move());
+    std::invoke(std::forward<F>(f), base->cast_move());
     base->destroy();
     delete base;
     return;
@@ -170,7 +225,7 @@ void insert_continuation_final(continuation_base<T>* base, G&& f) noexcept {
 
   auto step =
       detail::allocate_frame_noexcept<continuation_final<T, F>>(std::in_place,
-                                                                std::forward<G>(f));
+                                                                std::forward<F>(f));
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
@@ -183,11 +238,15 @@ void insert_continuation_final(continuation_base<T>* base, G&& f) noexcept {
 }
 
 template <typename T, typename F, typename R, typename G>
-auto insert_continuation_step(continuation_base<T>* base, G&& f) -> future<R> {
+auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
+    -> future<R> {
   static_assert(std::is_nothrow_invocable_r_v<R, F, T&&>);
+  static_assert(std::is_nothrow_destructible_v<T>);
+
   if (base->_next.load(std::memory_order_acquire) ==
       FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
     // short path
+    static_assert(std::is_nothrow_move_constructible_v<R>);
     auto fut =
         future<R>{std::in_place, std::invoke(std::forward<G>(f), base->cast_move())};
     base->destroy();
@@ -222,18 +281,24 @@ auto insert_continuation_step(continuation_base<T>* base, G&& f) -> future<R> {
 template <typename T, typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
 void fulfill_continuation(continuation_base<T>* base,
                           Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
-  base->emplace(std::forward<Args>(args)...);
+  base->emplace(std::forward<Args>(args)...);  // this can throw an exception
 
-  continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
-                                           std::memory_order_release,
-                                           std::memory_order_acquire)) {
-    if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
-      std::invoke(*expected, base->cast_move());
+  // the remainder should be noexcept
+  static_assert(std::is_nothrow_destructible_v<T>,
+                "type should be nothrow destructible.");
+  std::invoke([&]() noexcept {
+    continuation<T>* expected = nullptr;
+    if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
+                                             std::memory_order_release,
+                                             std::memory_order_acquire)) {
+      if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
+        std::invoke(*expected, base->cast_move());
+      }
+
+      base->destroy();
+      delete base;
     }
-    base->destroy();
-    delete base;
-  }
+  });
 }
 
 template <typename T>
@@ -266,7 +331,9 @@ struct continuation_start final : continuation_base<T> {};
 template <typename F, typename Func = std::decay_t<F>, typename = std::enable_if_t<std::is_class_v<Func>>>
 struct function_store : Func {
   template <typename G = F>
-  explicit function_store(std::in_place_t, G&& f) : Func(std::forward<G>(f)) {}
+  explicit function_store(std::in_place_t,
+                          G&& f) noexcept(std::is_nothrow_constructible_v<Func, G>)
+      : Func(std::forward<G>(f)) {}
 
   [[nodiscard]] Func& function_self() { return *this; }
   [[nodiscard]] Func const& function_self() const { return *this; }
@@ -277,7 +344,8 @@ struct continuation_step final : continuation_base<R>, function_store<F>, contin
   static_assert(std::is_nothrow_invocable_r_v<R, F, T&&>);
 
   template <typename G = F>
-  explicit continuation_step(std::in_place_t, G&& f)
+  explicit continuation_step(std::in_place_t, G&& f) noexcept(
+      std::is_nothrow_constructible_v<function_store<F>, std::in_place_t, G>)
       : function_store<F>(std::in_place, std::forward<G>(f)) {}
 
   void operator()(T&& t) noexcept override {
@@ -290,7 +358,8 @@ template <typename T, typename F>
 struct continuation_final final : continuation<T>, function_store<F> {
   static_assert(std::is_nothrow_invocable_r_v<void, F, T>);
   template <typename G = F>
-  explicit continuation_final(std::in_place_t, G&& f)
+  explicit continuation_final(std::in_place_t, G&& f) noexcept(
+      std::is_nothrow_constructible_v<function_store<F>, std::in_place_t, G>)
       : function_store<F>(std::in_place, std::forward<G>(f)) {}
   void operator()(T&& t) noexcept override {
     std::invoke(function_store<F>::function_self(), std::move(t));
@@ -328,18 +397,34 @@ auto compose(F&& f, G&& g) {
   return composer<F, G>(std::forward<F>(f), std::forward<G>(g));
 }
 
+template <typename... Ts, std::size_t... Is>
+auto tuple_as_ref(std::tuple<Ts...>& t, std::index_sequence<Is...>)
+    -> std::tuple<Ts&...> {
+  return std::forward_as_tuple(std::get<Is>(t)...);
+}
+
+template <typename... Ts>
+auto tuple_as_ref(std::tuple<Ts...>& t) -> std::tuple<Ts&...> {
+  return tuple_as_ref(t, std::index_sequence_for<Ts...>{});
+}
+
 }  // namespace detail
 
 template <typename T>
-struct promise {
-  ~promise() { detail::hard_assert(_base == nullptr); }
+struct promise_type_based_extension {};
+
+template <typename T>
+struct promise : promise_type_based_extension<T> {
+  ~promise() {
+    if (_base) {
+      std::move(*this).abandon();
+    }
+  }
 
   promise(promise const&) = delete;
   promise& operator=(promise const&) = delete;
   promise(promise&& o) noexcept = default;
   promise& operator=(promise&& o) noexcept = default;
-
-  explicit promise(detail::continuation_start<T>* base) : _base(base) {}
 
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   void fulfill(Args&&... args) && noexcept(std::is_nothrow_constructible_v<T, Args...>) {
@@ -348,17 +433,120 @@ struct promise {
     // throw an exception. In that case the promise has to stay active.
   }
 
+  void abandon() && { detail::abandon_promise(_base.release()); }
+
  private:
+  explicit promise(detail::continuation_start<T>* base) : _base(base) {}
+  template <typename S>
+  friend auto make_promise() -> std::pair<future<S>, promise<S>>;
+
   detail::fixed_ptr<detail::continuation_start<T>> _base = nullptr;
 };
 
 template <typename T, typename F, typename R>
-struct future_temporary : detail::function_store<F>, detail::small_box<T> {
+struct future_temporary;
+
+namespace detail {
+template <typename T, typename F>
+struct future_temporary_proxy {
+  template <typename R>
+  using instance = future_temporary<T, F, R>;
+};
+template <typename T>
+using future_proxy = future<T>;
+}  // namespace detail
+
+template <typename T, template <typename> typename F>
+struct future_type_based_extensions {};
+
+/*
+ *
+ * */
+
+struct yes_i_know_that_this_call_will_block_t {};
+inline constexpr yes_i_know_that_this_call_will_block_t yes_i_know_that_this_call_will_block;
+
+namespace detail {
+
+/**
+ * Base class unifies all common operations on futures and future_temporaries.
+ * Futures and Temporaries are dervived from this class and only specialise
+ * the functions `and_then` and `finally`.
+ * @tparam T Value type
+ * @tparam Fut Parent class template expecting one parameter.
+ */
+template <typename T, template <typename> typename Fut>
+struct future_base : future_type_based_extensions<T, Fut> {
+  using value_type = T;
+
+  /**
+   * _Blocks_ the current thread until the future is fulfilled. This **not**
+   * something you should do unless you have a very good reason to do so. The
+   * whole point of futures is to make code non-blocking.
+   *
+   * @return Returns the result value of type T.
+   */
+  T await(yes_i_know_that_this_call_will_block_t) && {
+    detail::box<T> box;
+    bool is_waiting = false, has_value = false;
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::move(self()).finally([&](T&& v) noexcept {
+      bool was_waiting;
+      {
+        std::unique_lock guard(mutex);
+        box.template emplace(std::move(v));
+        has_value = true;
+        was_waiting = is_waiting;
+      }
+      if (was_waiting) {
+        cv.notify_one();
+      }
+    });
+    std::unique_lock guard(mutex);
+    is_waiting = true;
+    cv.wait(guard, [&] { return has_value; });
+    return std::move(box).ref();
+  }
+
+  template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
+            typename R = std::invoke_result_t<F, T&&>>
+  auto and_capture(F&& f) && noexcept -> Fut<expect::expected<R>> {
+    static_assert(!expect::is_expected_v<R>, "use and_then instead");
+    static_assert(!expect::is_expected_v<T>, "use then instead");
+
+    std::move(self()).and_then([f = std::forward<F>(f)](T&& v) noexcept {
+      return expect::captured_invoke(f, std::move(f));
+    });
+  }
+
+ private:
+  auto& self() { return *static_cast<Fut<T>*>(this); }
+  auto& self() const { return *static_cast<Fut<T> const*>(this); }
+};
+}  // namespace detail
+
+/**
+ * A temporary object that is used to chain together multiple `and_then` calls
+ * into a single step to reduce memory and allocation overhead. Is derived from
+ * future_base and thus provides all functions that futures do.
+ *
+ * The temporary is implicitly convertible to `future<T>`.
+ * @tparam T Initial value type.
+ * @tparam F Temporary function type. Chain of functions that have been applied.
+ * @tparam R Result type of the chain.
+ */
+template <typename T, typename F, typename R>
+struct future_temporary
+    : detail::future_base<T, detail::future_temporary_proxy<T, F>::template instance>,
+      private detail::function_store<F>,
+      private detail::small_box<T> {
   static constexpr auto is_value_inlined = detail::small_box<T>::stores_value;
 
   future_temporary(future_temporary const&) = delete;
   future_temporary& operator=(future_temporary const&) = delete;
-  future_temporary(future_temporary&& o) noexcept : _base(nullptr) {
+  future_temporary(future_temporary&& o) noexcept
+      : detail::function_store<F>(std::move(o)), _base(nullptr) {
     if constexpr (is_value_inlined) {
       if (o.holds_inline_value()) {
         detail::box<T>::emplace(o.cast_move());
@@ -367,18 +555,11 @@ struct future_temporary : detail::function_store<F>, detail::small_box<T> {
     }
     std::swap(_base, o._base);
   }
-  future_temporary& operator=(future_temporary&& o) noexcept {
-    detail::hard_assert(_base == nullptr);
-    if (o.holds_inline_value()) {
-      detail::box<T>::emplace(o.cast_move());
-      o.destroy();
-    }
-    std::swap(_base, o._base);
-  }
+  future_temporary& operator=(future_temporary&& o) noexcept = delete;  // TODO
 
   ~future_temporary() {
     if (_base) {
-      std::move(*this).abandon();
+      std::move(*this).finalize().abandon();
     }
   }
 
@@ -391,9 +572,11 @@ struct future_temporary : detail::function_store<F>, detail::small_box<T> {
 
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-        return future_temporary<T, decltype(composition), S>(std::in_place,
-                                                             std::move(composition),
-                                                             detail::box<T>::cast_move());
+        auto fut = future_temporary<T, decltype(composition), S>(
+            std::in_place, std::move(composition), detail::box<T>::cast_move());
+        detail::box<T>::destroy();
+        _base.reset();
+        return fut;
       }
     }
 
@@ -402,8 +585,8 @@ struct future_temporary : detail::function_store<F>, detail::small_box<T> {
   }
 
   template <typename G, std::enable_if_t<std::is_nothrow_invocable_r_v<void, G, R&&>, int> = 0>
-  void finally(G&& f) {
-    auto composition =
+  void finally(G&& f) && noexcept {
+    auto&& composition =
         detail::compose(std::forward<G>(f),
                         std::move(detail::function_store<F>::function_self()));
 
@@ -416,19 +599,22 @@ struct future_temporary : detail::function_store<F>, detail::small_box<T> {
       }
     }
 
-    return detail::insert_continuation_final<T, F>(_base.release(), std::move(composition));
+    return detail::insert_continuation_final<T, decltype(composition)>(_base.release(),
+                                                                       std::move(composition));
   }
 
-  void abandon() && { std::move(*this).finalize().abandon(); }
+  void abandon() && noexcept { std::move(*this).finalize().abandon(); }
 
-  operator future<R>() && { return std::move(*this).finalize(); }
+  operator future<R>() && noexcept { return std::move(*this).finalize(); }
 
-  auto finalize() && -> future<R> {
+  auto finalize() && noexcept -> future<R> {
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
+        static_assert(std::is_nothrow_move_constructible_v<R>);
         auto f = future<R>(std::in_place,
                            std::invoke(detail::function_store<F>::function_self(),
                                        detail::box<T>::cast_move()));
+        static_assert(std::is_nothrow_destructible_v<T>);
         detail::box<T>::destroy();
         return f;
       }
@@ -453,22 +639,23 @@ struct future_temporary : detail::function_store<F>, detail::small_box<T> {
         detail::small_box<T>(std::in_place, std::forward<S>(s)),
         _base(FUTURES_INVALID_POINTER_INLINE_VALUE(T)) {}
 
-  template<typename, typename>
+  template <typename>
   friend class future;
-  template<typename, typename, typename>
+  template <typename, typename, typename>
   friend class future_temporary;
 
   detail::fixed_ptr<detail::continuation_base<T>> _base;
 };
 
-
-template <typename T, typename>
-struct future : private detail::small_box<T> {
-  static_assert(!std::is_void_v<T>, "void is not supported, use std::monostate instead");
+template <typename T>
+struct future : detail::future_base<T, detail::future_proxy>,
+                private detail::small_box<T> {
   static constexpr auto is_value_inlined = detail::small_box<T>::stores_value;
 
+  static_assert(!std::is_void_v<T>,
+                "void is not supported, use std::monostate instead");
   static_assert(std::is_nothrow_move_constructible_v<T>);
-  static_assert(std::is_nothrow_move_assignable_v<T>);
+  static_assert(std::is_nothrow_destructible_v<T>);
 
   future(future const&) = delete;
   future& operator=(future const&) = delete;
@@ -481,6 +668,7 @@ struct future : private detail::small_box<T> {
     }
     std::swap(_base, o._base);
   }
+
   future& operator=(future&& o) noexcept {
     detail::hard_assert(_base == nullptr);
     if (o.holds_inline_value()) {
@@ -490,10 +678,22 @@ struct future : private detail::small_box<T> {
     std::swap(_base, o._base);
   }
 
-  ~future() { detail::hard_assert(_base == nullptr); }
+  ~future() {
+    if (_base) {
+      std::move(*this).abandon();
+    }
+  }
 
-  explicit future(detail::continuation_base<T>* ptr) noexcept : _base(ptr) {}
-
+  /**
+   * Constructs a fulfilled future in place. The arguments are passed to the
+   * constructor of `T`. If the value can be inlined it is constructed inline,
+   * otherwise memory is allocated.
+   *
+   * This constructor is noexcept if the used constructor of `T`. If the value
+   * is not small, `std::bad_alloc` can occur.
+   * @tparam Args
+   * @param args
+   */
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit future(std::in_place_t, Args&&... args) noexcept(
       std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
@@ -506,34 +706,68 @@ struct future : private detail::small_box<T> {
     }
   }
 
+  /**
+   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
+   * the return value of the provided callback. It is undefined in which thread
+   * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
+   *
+   * This function returns a temporary object which is implicitly convertible to future<R>.
+   *
+   * @tparam F
+   * @param f
+   * @return A new future with `value_type` equal to the result type of `F`.
+   */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
-  auto and_then_temp(F&& f) && noexcept {
+  auto and_then(F&& f) && noexcept {
+    if constexpr (is_value_inlined) {
+      if (holds_inline_value()) {
+        auto fut = future_temporary<T, F, R>(std::in_place, std::forward<F>(f),
+                                             detail::box<T>::cast_move());
+        cleanup_local_state();
+        return fut;
+      }
+    }
     return future_temporary<T, F, R>(std::forward<F>(f), std::move(_base));
   }
 
+  /**
+   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
+   * the return value of the provided callback. It is undefined in which thread
+   * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
+   *
+   * Unlike `and_then` this function does not return a temporary.
+   *
+   * @tparam F callback type
+   * @param f callback
+   * @return A new future with `value_type` equal to the result type of `F`.
+   */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
-  auto and_then(F&& f) && noexcept -> future<R> {
+  auto and_then_direct(F&& f) && noexcept -> future<R> {
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
         auto fut = future<R>{std::in_place,
                              std::invoke(std::forward<F>(f), this->cast_move())};
-        detail::box<T>::destroy();
-        _base.reset();
+        cleanup_local_state();
         return std::move(fut);
       }
     }
     return detail::insert_continuation_step<T, F, R>(_base.release(), std::forward<F>(f));
   }
 
+  /**
+   * Enqueues a final callback and ends the future chain.
+   *
+   * @tparam F callback type
+   * @param f callback
+   */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_r_v<void, F, T&&>, int> = 0>
-  void finally(F&& f) {
+  void finally(F&& f) && noexcept {
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
         std::invoke(std::forward<F>(f), detail::box<T>::cast_move());
-        detail::box<T>::destroy();
-        _base.reset();
+        cleanup_local_state();
         return;
       }
     }
@@ -541,33 +775,153 @@ struct future : private detail::small_box<T> {
     return detail::insert_continuation_final<T, F>(_base.release(), std::forward<F>(f));
   }
 
+  /**
+   * Returns true if the future holds a value locally.
+   * @return true if a local value is present.
+   */
   [[nodiscard]] bool holds_inline_value() const {
     return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
   }
 
-  void abandon() && {
+  /**
+   * Abandons a future chain. If the promise is abandoned as well, nothing happens.
+   * If, however, the promise is fulfilled it depends on the `abandoned_future_handler`
+   * for that type what will happen next. In most cases this is just cleanup.
+   *
+   * Some types, e.g. `expected<S>` will call terminated if it contains an
+   * unhandled exception.
+   */
+  void abandon() && noexcept {
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-        detail::box<T>::destroy();
+        cleanup_local_state();
+        return;
       }
-    } else {
-      detail::abandon_continuation(_base.release());
     }
+
+    detail::abandon_continuation(_base.release());
+  }
+
+  explicit future(detail::continuation_base<T>* ptr) noexcept : _base(ptr) {}
+
+ private:
+  void cleanup_local_state() {
+    detail::box<T>::destroy();
     _base.reset();
   }
 
- private:
   detail::fixed_ptr<detail::continuation_base<T>> _base;
 };
 
+template <typename T, template <typename> typename Fut>
+struct future_type_based_extensions<expect::expected<T>, Fut> {
+  /**
+   *
+   * @tparam F
+   * @tparam R
+   * @param f
+   * @return
+   */
+  template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
+            typename R = std::invoke_result_t<F, T&&>>
+  auto then(F&& f) && noexcept {
+    return std::move(self()).and_then(
+        [f = std::forward<F>(f)](expect::expected<T>&& e) noexcept -> expect::expected<R> {
+          return std::move(e).map_value(f);
+        });
+  }
 
-template<typename T>
-struct future<T, std::enable_if_t<std::is_void_v<T>>> {
-  template<typename S>
-  struct always_false : std::false_type {};
-  static_assert(always_false<T>::value, "void is not supported, use std::monostate instead");
+  /**
+   * Catches an exception of type `E` and calls `f` with `E const&`. If the
+   * values does not contain an exception `f` will _never_ be called. The return
+   * value of `f` is replaced with the exception. If `f` itself throws an
+   * exception, the old exception is replaced with the new one.
+   * @tparam E
+   * @tparam F
+   * @param f
+   * @return A new future containing a value if the exception was caught.
+   */
+  template <typename E, typename F, std::enable_if_t<std::is_invocable_r_v<T, F, E const&>, int> = 0,
+            std::enable_if_t<!std::is_void_v<T>, int> = 0>
+  auto catch_error(F&& f) && noexcept {
+    return std::move(self()).and_then(
+        [f = std::forward<F>(f)](expect::expected<T>&& e) noexcept -> expect::expected<T> {
+          return std::move(e).template map_error<E>(f);
+        });
+  }
+
+  /**
+   * Same as await but unwraps the `expected<T>`.
+   * @return Returns the value contained in expected, or throws the
+   * contained exception.
+   */
+  T await_unwrap() {
+    return std::move(self()).await(yes_i_know_that_this_call_will_block).unwrap();
+  }
+
+  /**
+   * (join) Flattens the underlying `expected<T>`, i.e. converts
+   * `expected<expected<T>>` to `expected<T>`.
+   * @return Future containing just a `expected<T>`.
+   */
+  template <typename U = T, std::enable_if_t<expect::is_expected_v<U>, int> = 0>
+  auto flatten() {
+    return std::move(self()).and_then(
+        [](expect::expected<T>&& e) { return std::move(e).flatten(); });
+  }
+
+  template <typename E, typename... Args>
+  auto rethrow_nested(Args&&... args) noexcept {
+    return std::move(self()).and_then(
+        [args_tuple = std::make_tuple(std::forward<Args>(args)...)](
+            expect::expected<T>&& e) mutable noexcept -> expect::expected<T> {
+          // TODO can we instead forward to expected<T>::rethrow_nested
+          try {
+            try {
+              e.rethrow_error();
+            } catch(...) {
+              std::throw_with_nested(std::make_from_tuple<E>(std::move(args_tuple)));
+            }
+          } catch(...) {
+            return std::current_exception();
+          }
+
+          return std::move(e);
+        });
+  }
+
+ private:
+  using future_type = Fut<expect::expected<T>>;
+
+  future_type& self() { return *static_cast<future_type*>(this); }
+  future_type const& self() const {
+    return *static_cast<future_type const*>(this);
+  }
 };
 
+template <typename T>
+struct promise_type_based_extension<expect::expected<T>> {
+  /**
+   * A special form of `fulfill`. Uses `capture_invoke` to call a function and
+   * capture the return value of any exceptions in the promise.
+   * @tparam F
+   * @tparam Args
+   * @param f
+   * @param args
+   */
+  template <typename F, typename... Args, std::enable_if_t<std::is_invocable_r_v<T, F, Args...>, int> = 0>
+  void capture(F&& f, Args&&... args) && noexcept {
+    std::move(self()).fulfill(
+        expect::captured_invoke(std::forward<F>(f), std::forward<Args>(args)...));
+  }
+
+ private:
+  using promise_type = promise<expect::expected<T>>;
+  promise_type& self() { return static_cast<promise<T>&>(*this); }
+  promise_type const& self() const {
+    return static_cast<promise<T> const&>(*this);
+  }
+};
 
 template <typename T>
 auto make_promise() -> std::pair<future<T>, promise<T>> {
