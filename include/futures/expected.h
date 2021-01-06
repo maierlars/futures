@@ -81,10 +81,10 @@ struct expected_base {
     try {
       try {
         self().rethrow_error();
-      } catch(...) {
+      } catch (...) {
         std::throw_with_nested(E(std::forward<Args>(args)...));
       }
-    } catch(...) {
+    } catch (...) {
       return std::current_exception();
     }
 
@@ -151,12 +151,13 @@ struct expected : detail::expected_base<T> {
 
   expected(expected const&) = delete;
   expected& operator=(expected const&) = delete;
-  expected& operator=(expected&&) noexcept = delete;
+  expected& operator=(expected&&) noexcept = delete;  // TODO implement this
 
   /**
    * Returns the value or throws the containing exception.
    * @return Underlying value.
    */
+  // TODO do we want to keep the & and const& variants?
   T& unwrap() & {
     if (_has_value) {
       return _value;
@@ -174,6 +175,24 @@ struct expected : detail::expected_base<T> {
       return std::move(_value);
     }
     std::rethrow_exception(_exception);
+  }
+
+  /**
+   * Returns the value present or, if there is an exception, constructs a `T`
+   * using the provided parameters. This does not throw an exception, unless
+   * the selected constructor of `T` does.
+   * @tparam Args
+   * @param args
+   * @return a valid value
+   */
+  template <typename... Args>
+  T unwrap_or(Args&&... args) && noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+    static_assert(std::is_constructible_v<T, Args...>);
+    if (has_value()) {
+      return std::move(_value);
+    } else {
+      return T(std::forward<Args>(args)...);
+    }
   }
 
   /**
@@ -235,8 +254,8 @@ struct expected : detail::expected_base<T> {
 template <>
 struct expected<void> : detail::expected_base<void> {
   expected() = default;
-  expected(std::exception_ptr p) : _exception(std::move(p)) {}
-  expected(std::in_place_t) : _exception(nullptr) {}
+  /* implicit */ expected(std::exception_ptr p) : _exception(std::move(p)) {}
+  /* implicit */ expected(std::in_place_t) : _exception(nullptr) {}
   ~expected() = default;
 
   expected(expected const&) = delete;

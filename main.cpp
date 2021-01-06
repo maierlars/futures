@@ -12,6 +12,18 @@ struct A {
   std::shared_ptr<int> x = nullptr;
 };
 
+void foobar() {
+  auto&& [f, p] = futures::make_promise<int>();
+
+  // mutex.lock();
+  std::move(f).and_then([](int x) noexcept {
+    // mutex.unlock();
+    return 14;
+  });
+
+  throw 12;
+}
+
 auto baz() -> my_future<A> {
   auto&& [f, p] = futures::make_promise<expect::expected<A>>();
 
@@ -22,14 +34,13 @@ auto baz() -> my_future<A> {
     std::move(p).fulfill(std::in_place, 12);
   });
   t.detach();
-  // std::move(p).fulfill(std::in_place, 12);
 
   return std::move(f);
 }
 
 auto foo() -> my_future<int> {
   return baz()
-      .then([](A&& x) noexcept {
+      .then([](A&& x) {
         std::cout << "first then executed " << *x.x << std::endl;
         return A(*x.x + 4);
       })
@@ -42,25 +53,21 @@ auto foo() -> my_future<int> {
       });
 }
 
-auto bar() -> my_future<int> {
-  return my_future<int>(std::in_place, 12);
-}
+auto bar() -> my_future<int> { return my_future<int>(std::in_place, 12); }
 
 int main() {
-  std::cout << "waited for value: "
-            << foo()
-                   .then([](int&& x) noexcept {
-                     std::cout << "third then executed " << x << std::endl;
-                     return x + 4;
-                   })
-                   .rethrow_nested<std::logic_error>(
-                       "runtime error is not allowed")
-                   .catch_error<std::runtime_error>([](auto&& e) noexcept -> int {
-                     std::cout << "caught runtime error " << e.what() << std::endl;
-                     return 5;
-                   })
-                   .await_unwrap()
-            << std::endl;
+  auto value = foo()
+               .then([](int&& x) noexcept {
+                 std::cout << "third then executed " << x << std::endl;
+                 return x + 4;
+               })
+               .rethrow_nested<std::logic_error>("runtime error is not allowed")
+               .catch_error<std::runtime_error>([](auto&& e) noexcept -> int {
+                 std::cout << "caught runtime error " << e.what() << std::endl;
+                 return 5;
+               })
+               .await_unwrap();
+  std::cout << "awaited value " << value << std::endl;
 
   auto&& [a, b] = futures::collect(foo(), baz()).transpose();
   std::cout << "collect returned" << std::endl;
@@ -74,7 +81,11 @@ int main() {
   v.emplace_back(bar());
   v.emplace_back(foo());
 
-  futures::collect(v.begin(), v.end()).await(futures::yes_i_know_that_this_call_will_block);
+  // TODO make this preserve the order
+  auto w = futures::collect(v.begin(), v.end()).await(futures::yes_i_know_that_this_call_will_block);
+  for (auto&& x : w) {
+    std::cout << x.unwrap() << std::endl;
+  }
 
   std::this_thread::sleep_for(std::chrono::seconds{5});
 }

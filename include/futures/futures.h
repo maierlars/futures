@@ -2,14 +2,13 @@
 #define FUTURES_FUTURES_H
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <type_traits>
 #include <utility>
-
-#include <condition_variable>
-#include <iostream>
 
 #include "expected.h"
 
@@ -420,7 +419,7 @@ template <typename T>
 struct promise_type_based_extension {};
 
 /**
- * Producing end of my_future-chain. When the promise is `fulfilled` the chain
+ * Producing end of future-chain. When the promise is `fulfilled` the chain
  * of futures is evaluated.
  * @tparam T
  */
@@ -498,7 +497,7 @@ struct future_base : future_type_based_extensions<T, Fut> {
   using value_type = T;
 
   /**
-   * _Blocks_ the current thread until the my_future is fulfilled. This **not**
+   * _Blocks_ the current thread until the future is fulfilled. This **not**
    * something you should do unless you have a very good reason to do so. The
    * whole point of futures is to make code non-blocking.
    *
@@ -527,6 +526,12 @@ struct future_base : future_type_based_extensions<T, Fut> {
     return std::move(box).ref();
   }
 
+  /**
+   * Calls `f` and captures its return value in an `expected<R>`.
+   * @tparam F
+   * @param f
+   * @return
+   */
   template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
   auto and_capture(F&& f) && noexcept -> Fut<expect::expected<R>> {
@@ -539,8 +544,8 @@ struct future_base : future_type_based_extensions<T, Fut> {
   }
 
  private:
-  auto& self() { return *static_cast<Fut<T>*>(this); }
-  auto& self() const { return *static_cast<Fut<T> const*>(this); }
+  auto& self() noexcept { return *static_cast<Fut<T>*>(this); }
+  auto& self() const noexcept { return *static_cast<Fut<T> const*>(this); }
 };
 }  // namespace detail
 
@@ -549,7 +554,7 @@ struct future_base : future_type_based_extensions<T, Fut> {
  * into a single step to reduce memory and allocation overhead. Is derived from
  * future_base and thus provides all functions that futures do.
  *
- * The temporary is implicitly convertible to `my_future<T>`.
+ * The temporary is implicitly convertible to `future<T>`.
  * @tparam T Initial value type.
  * @tparam F Temporary function type. Chain of functions that have been applied.
  * @tparam R Result type of the chain.
@@ -605,8 +610,7 @@ struct future_temporary
       if (holds_inline_value()) {
         auto fut = future_temporary<T, decltype(composition), S>(
             std::in_place, std::move(composition), detail::box<T>::cast_move());
-        detail::box<T>::destroy();
-        _base.reset();
+        cleanup_local_state();
         return fut;
       }
     }
@@ -624,8 +628,7 @@ struct future_temporary
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
         std::invoke(composition, detail::box<T>::cast_move());
-        detail::box<T>::destroy();
-        _base.reset();
+        cleanup_local_state();
         return;
       }
     }
@@ -636,7 +639,7 @@ struct future_temporary
 
   void abandon() && noexcept { std::move(*this).finalize().abandon(); }
 
-  operator future<R>() && noexcept { return std::move(*this).finalize(); }
+  /* implicit */ operator future<R>() && noexcept { return std::move(*this).finalize(); }
 
   auto finalize() && noexcept -> future<R> {
     if constexpr (is_value_inlined) {
@@ -646,8 +649,7 @@ struct future_temporary
                            std::invoke(detail::function_store<F>::function_self(),
                                        detail::box<T>::cast_move()));
         static_assert(std::is_nothrow_destructible_v<T>);
-        detail::box<T>::destroy();
-        _base.reset();
+        cleanup_local_state();
         return f;
       }
     }
@@ -656,11 +658,17 @@ struct future_temporary
         _base.release(), std::move(detail::function_store<F>::function_self()));
   }
 
-  [[nodiscard]] bool holds_inline_value() const {
+  // TODO move to future_base
+  [[nodiscard]] bool holds_inline_value() const noexcept {
     return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
   }
+  [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
  private:
+  void cleanup_local_state() {
+    detail::box<T>::destroy();
+    _base.reset();
+  }
   template <typename G = F>
   future_temporary(G&& f, detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> base)
       : detail::function_store<F>(std::in_place, std::forward<G>(f)),
@@ -675,21 +683,20 @@ struct future_temporary
   friend class future;
   template <typename, typename, typename>
   friend class future_temporary;
-
+  // TODO move _base pointer to future_base.
   detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
 };
 
 /**
- * Consuming end of a my_future-chain. You can add more elements to the chain using
+ * Consuming end of a future-chain. You can add more elements to the chain using
  * this interface.
  * @tparam T value_type
  */
 template <typename T>
 struct future : detail::future_base<T, detail::future_proxy>,
                 private detail::small_box<T> {
-
   /**
-   * Is true if the my_future can store an inline value.
+   * Is true if the future can store an inline value.
    */
   static constexpr auto is_value_inlined = detail::small_box<T>::stores_value;
 
@@ -722,7 +729,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * If the my_future was not used or moved away, the my_future is abandoned.
+   * If the future was not used or moved away, the future is abandoned.
    * For more, see `abandon`.
    */
   ~future() {
@@ -732,7 +739,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * Constructs a fulfilled my_future in place. The arguments are passed to the
+   * Constructs a fulfilled future in place. The arguments are passed to the
    * constructor of `T`. If the value can be inlined it is constructed inline,
    * otherwise memory is allocated.
    *
@@ -754,15 +761,15 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * (fmap) Enqueues a callback to the my_future chain and returns a new my_future that awaits
+   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
    * the return value of the provided callback. It is undefined in which thread
    * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
    *
-   * This function returns a temporary object which is implicitly convertible to my_future<R>.
+   * This function returns a temporary object which is implicitly convertible to future<R>.
    *
    * @tparam F
    * @param f
-   * @return A new my_future with `value_type` equal to the result type of `F`.
+   * @return A new future with `value_type` equal to the result type of `F`.
    */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
@@ -779,7 +786,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * (fmap) Enqueues a callback to the my_future chain and returns a new my_future that awaits
+   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
    * the return value of the provided callback. It is undefined in which thread
    * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
    *
@@ -787,7 +794,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
    *
    * @tparam F callback type
    * @param f callback
-   * @return A new my_future with `value_type` equal to the result type of `F`.
+   * @return A new future with `value_type` equal to the result type of `F`.
    */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
@@ -804,7 +811,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * Enqueues a final callback and ends the my_future chain.
+   * Enqueues a final callback and ends the future chain.
    *
    * @tparam F callback type
    * @param f callback
@@ -823,15 +830,17 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   /**
-   * Returns true if the my_future holds a value locally.
+   * Returns true if the future holds a value locally.
    * @return true if a local value is present.
    */
-  [[nodiscard]] bool holds_inline_value() const {
+  [[nodiscard]] bool holds_inline_value() const noexcept {
     return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
   }
+  // TODO move _base pointer to future_base.
+  [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
   /**
-   * Abandons a my_future chain. If the promise is abandoned as well, nothing happens.
+   * Abandons a future chain. If the promise is abandoned as well, nothing happens.
    * If, however, the promise is fulfilled it depends on the `abandoned_future_handler`
    * for that type what will happen next. In most cases this is just cleanup.
    *
@@ -855,6 +864,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
     detail::box<T>::destroy();
     _base.reset();
   }
+  // TODO move _base pointer to future_base.
   detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
 };
 
@@ -884,7 +894,7 @@ struct future_type_based_extensions<expect::expected<T>, Fut> {
    * @tparam E
    * @tparam F
    * @param f
-   * @return A new my_future containing a value if the exception was caught.
+   * @return A new future containing a value if the exception was caught.
    */
   template <typename E, typename F, std::enable_if_t<std::is_invocable_r_v<T, F, E const&>, int> = 0,
             std::enable_if_t<!std::is_void_v<T>, int> = 0>
@@ -938,8 +948,8 @@ struct future_type_based_extensions<expect::expected<T>, Fut> {
  private:
   using future_type = Fut<expect::expected<T>>;
 
-  future_type& self() { return *static_cast<future_type*>(this); }
-  future_type const& self() const {
+  future_type& self() noexcept { return *static_cast<future_type*>(this); }
+  future_type const& self() const noexcept {
     return *static_cast<future_type const*>(this);
   }
 };
@@ -962,16 +972,16 @@ struct promise_type_based_extension<expect::expected<T>> {
 
  private:
   using promise_type = promise<expect::expected<T>>;
-  promise_type& self() { return static_cast<promise<T>&>(*this); }
-  promise_type const& self() const {
+  promise_type& self() noexcept { return static_cast<promise<T>&>(*this); }
+  promise_type const& self() const noexcept {
     return static_cast<promise<T> const&>(*this);
   }
 };
 
 /**
- * Create a new pair of my_future and promise with value type `T`.
+ * Create a new pair of future and promise with value type `T`.
  * @tparam T value type
- * @return pair of my_future and promise.
+ * @return pair of future and promise.
  */
 template <typename T>
 auto make_promise() -> std::pair<future<T>, promise<T>> {
@@ -998,7 +1008,7 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut> {
   }
 
   /**
-   * Transposes a my_future and a tuple. Returns a tuple of futures awaiting the
+   * Transposes a future and a tuple. Returns a tuple of futures awaiting the
    * individual members.
    * @return tuple of futures
    */
@@ -1036,8 +1046,8 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut> {
 
   using future_type = Fut<std::tuple<Ts...>>;
 
-  future_type& self() { return *static_cast<future_type*>(this); }
-  future_type const& self() const {
+  future_type& self() noexcept { return *static_cast<future_type*>(this); }
+  future_type const& self() const noexcept {
     return *static_cast<future_type const*>(this);
   }
 };

@@ -106,6 +106,7 @@ template <typename InputIt, typename V = typename std::iterator_traits<InputIt>:
 auto collect(InputIt begin, InputIt end) -> future<R> {
   auto&& [f, p] = make_promise<R>();
 
+  // TODO this does two allocations
   struct context {
     ~context() { std::move(out_promise).fulfill(std::move(result)); }
     explicit context(promise<std::vector<B>> p) : out_promise(std::move(p)) {}
@@ -121,7 +122,7 @@ auto collect(InputIt begin, InputIt end) -> future<R> {
   for (std::size_t i = 0; begin != end; ++begin, ++i) {
     std::move(*begin).finally([i, ctx](B&& v) noexcept {
       // never throws because we have reserved enough memory
-      ctx->result.emplace_back(std::move(v));
+      ctx->result[i] = std::move(v);
     });
   }
   return std::move(f);
