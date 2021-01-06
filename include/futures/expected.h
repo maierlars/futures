@@ -10,6 +10,16 @@ namespace expect {
 template <typename T>
 struct expected;
 
+/**
+ * Invokes `f` with `args...` and caputers the return value in an expected. If
+ * and exception is thrown is it also captured.
+ * @tparam F
+ * @tparam Args
+ * @tparam R
+ * @param f
+ * @param args
+ * @return
+ */
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int> = 0,
           typename R = std::invoke_result_t<F, Args...>>
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R>;
@@ -103,15 +113,18 @@ struct is_expected<expected<T>> : std::true_type {};
 template <typename T>
 inline constexpr auto is_expected_v = is_expected<T>::value;
 
+/**
+ * Either contains a value of type T or an exception.
+ * @tparam T
+ */
 template <typename T>
 struct expected : detail::expected_base<T> {
   static_assert(!std::is_void_v<T> && !std::is_reference_v<T>);
 
   expected() = delete;
-
-  expected(std::exception_ptr p)
+  /* implicit */ expected(std::exception_ptr p)
       : _exception(std::move(p)), _has_value(false) {}
-  expected(T t) : _value(std::move(t)), _has_value(true) {}
+  /* implicit */ expected(T t) : _value(std::move(t)), _has_value(true) {}
 
   template <typename... Ts, std::enable_if_t<std::is_constructible_v<T, Ts...>, int> = 0>
   explicit expected(std::in_place_t,
@@ -119,7 +132,7 @@ struct expected : detail::expected_base<T> {
       : _value(std::forward<Ts>(ts)...), _has_value(true) {}
 
   template <typename U = T, std::enable_if_t<std::is_move_constructible_v<U>, int> = 0>
-  expected(expected&& o) noexcept(std::is_nothrow_move_constructible_v<U>)
+  /* implicit */ expected(expected&& o) noexcept(std::is_nothrow_move_constructible_v<T>)
       : _has_value(o._has_value) {
     if (o._has_value) {
       new (&this->_value) T(std::move(o._value));
@@ -140,6 +153,10 @@ struct expected : detail::expected_base<T> {
   expected& operator=(expected const&) = delete;
   expected& operator=(expected&&) noexcept = delete;
 
+  /**
+   * Returns the value or throws the containing exception.
+   * @return Underlying value.
+   */
   T& unwrap() & {
     if (_has_value) {
       return _value;
@@ -159,6 +176,10 @@ struct expected : detail::expected_base<T> {
     std::rethrow_exception(_exception);
   }
 
+  /**
+   * Returns the exception pointer.
+   * @return returns the exception or null if no exception is present.
+   */
   [[nodiscard]] std::exception_ptr error() const {
     if (has_error()) {
       return _exception;
@@ -166,31 +187,21 @@ struct expected : detail::expected_base<T> {
     return nullptr;
   }
 
+  /**
+   * Accesses the value.
+   */
   T* operator->() { return &unwrap(); }
   T const* operator->() const { return &unwrap(); }
 
   [[nodiscard]] bool has_value() const noexcept { return _has_value; }
   [[nodiscard]] bool has_error() const noexcept { return !has_value(); }
 
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, T&>, int> = 0>
-  auto map_value(F&& f) & noexcept -> expected<std::invoke_result_t<F, T&>> {
-    if (has_error()) {
-      return _exception;
-    }
-
-    return captured_invoke(std::forward<F>(f), _value);
-  }
-
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, T const&>, int> = 0>
-  auto map_value(F&& f) const& noexcept
-      -> expected<std::invoke_result_t<F, T const&>> {
-    if (has_error()) {
-      return _exception;
-    }
-
-    return captured_invoke(std::forward<F>(f), _value);
-  }
-
+  /**
+   * If a value is present, `f` is called, otherwise the exception is passed forward.
+   * @tparam F
+   * @param f
+   * @return
+   */
   template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0>
   auto map_value(F&& f) && noexcept -> expected<std::invoke_result_t<F, T&&>> {
     if (has_error()) {
@@ -200,6 +211,10 @@ struct expected : detail::expected_base<T> {
     return captured_invoke(std::forward<F>(f), std::move(_value));
   }
 
+  /**
+   * Monadic join. Reduces expected<expected<T>> to expected<T>.
+   * @return
+   */
   template <typename U = T, std::enable_if_t<is_expected_v<U>, int> = 0, typename R = typename U::value_type>
   auto flatten() && -> expected<R> {
     if (has_error()) {

@@ -5,14 +5,14 @@
 #include "futures/utilities.h"
 
 template <typename T>
-using future = futures::future<expect::expected<T>>;
+using my_future = futures::future<expect::expected<T>>;
 
 struct A {
   explicit A(int x) noexcept : x(std::make_shared<int>(x)) {}
   std::shared_ptr<int> x = nullptr;
 };
 
-auto baz() -> future<A> {
+auto baz() -> my_future<A> {
   auto&& [f, p] = futures::make_promise<expect::expected<A>>();
 
   /* */
@@ -27,7 +27,7 @@ auto baz() -> future<A> {
   return std::move(f);
 }
 
-auto foo() -> future<int> {
+auto foo() -> my_future<int> {
   return baz()
       .then([](A&& x) noexcept {
         std::cout << "first then executed " << *x.x << std::endl;
@@ -40,6 +40,10 @@ auto foo() -> future<int> {
         std::cout << "not returning a value " << *x.x << std::endl;
         return *x.x - 4;
       });
+}
+
+auto bar() -> my_future<int> {
+  return my_future<int>(std::in_place, 12);
 }
 
 int main() {
@@ -65,6 +69,12 @@ int main() {
 
   std::cout << "second collect returned" << std::endl;
 
+  std::vector<my_future<int>> v;
+  v.emplace_back(foo());
+  v.emplace_back(bar());
+  v.emplace_back(foo());
+
+  futures::collect(v.begin(), v.end()).await(futures::yes_i_know_that_this_call_will_block);
 
   std::this_thread::sleep_for(std::chrono::seconds{5});
 }
