@@ -41,7 +41,7 @@ extern invalid_pointer_type invalid_pointer_promise_fulfilled;
 #define FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T) \
   reinterpret_cast<::futures::detail::continuation<T>*>(&detail::invalid_pointer_promise_fulfilled)
 
-template <typename T>
+template <typename T, std::size_t tag = 0>
 struct box {
   static_assert(!std::is_reference_v<T>);
   box() noexcept = default;
@@ -538,7 +538,7 @@ struct future_base : future_type_based_extensions<T, Fut> {
  */
 template <typename T, typename F, typename R>
 struct future_temporary
-    : detail::future_base<T, detail::future_temporary_proxy<T, F>::template instance>,
+    : detail::future_base<R, detail::future_temporary_proxy<T, F>::template instance>,
       private detail::function_store<F>,
       private detail::small_box<T> {
   static constexpr auto is_value_inlined = detail::small_box<T>::stores_value;
@@ -690,7 +690,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
     detail::hard_assert(_base == nullptr);
     if (o.holds_inline_value()) {
       detail::box<T>::emplace(o.cast_move());
-      o.destroy(); // o will have _base == nullptr
+      o.destroy();  // o will have _base == nullptr
     }
     std::swap(_base, o._base);
   }
@@ -896,10 +896,10 @@ struct future_type_based_extensions<expect::expected<T>, Fut> {
           try {
             try {
               e.rethrow_error();
-            } catch(...) {
+            } catch (...) {
               std::throw_with_nested(std::make_from_tuple<E>(std::move(args_tuple)));
             }
-          } catch(...) {
+          } catch (...) {
             return std::current_exception();
           }
 
@@ -945,6 +945,69 @@ auto make_promise() -> std::pair<future<T>, promise<T>> {
   auto start = new detail::continuation_start<T>();
   return std::make_pair(future<T>{start}, promise<T>{start});
 }
+
+template <typename... Ts, template <typename> typename Fut>
+struct future_type_based_extensions<std::tuple<Ts...>, Fut> {
+  using tuple_type = std::tuple<Ts...>;
+
+  template <std::size_t Idx>
+  auto get() {
+    return std::move(self()).and_then(
+        [](tuple_type&& t) noexcept -> std::tuple_element_t<Idx, tuple_type> {
+          return std::move(std::get<Idx>(t));
+        });
+  }
+
+  template <typename Idx>
+  auto get() {
+    return std::move(self()).and_then(
+        [](tuple_type&& t) noexcept { return std::move(std::get<Idx>(t)); });
+  }
+
+  /**
+   * Transposes a future and a tuple. Returns a tuple of futures awaiting the
+   * individual members.
+   * @return tuple of futures
+   */
+  auto transpose() -> std::tuple<Fut<Ts>...> {
+    return transpose(std::index_sequence_for<Ts...>{});
+  }
+
+  /**
+   * Like `transpose` but restricts the output to the given indices. Other
+   * elements are discarded.
+   * @tparam Is indexes to select
+   * @return tuple of futures
+   */
+  template <std::size_t... Is>
+  auto transpose_some() -> std::tuple<Fut<std::tuple_element<Is, tuple_type>>...> {
+    return transpose(std::index_sequence<Is...>{});
+  }
+
+ private:
+  template <std::size_t... Is>
+  auto transpose(std::index_sequence<Is...>) {
+    std::tuple<std::pair<future<Ts>, promise<Ts>>...> pairs(
+        std::invoke([] { return make_promise<Ts>(); })...);
+
+    std::move(self()).finally(
+        [ps = std::make_tuple(std::move(std::get<Is>(pairs).second)...)](auto&& t) mutable noexcept {
+          (std::invoke([&] {
+             std::move(std::get<Is>(ps)).fulfill(std::move(std::get<Is>(t)));
+           }),
+           ...);
+        });
+
+    return std::make_tuple(std::move(std::get<Is>(pairs).first)...);
+  }
+
+  using future_type = Fut<std::tuple<Ts...>>;
+
+  future_type& self() { return *static_cast<future_type*>(this); }
+  future_type const& self() const {
+    return *static_cast<future_type const*>(this);
+  }
+};
 
 }  // namespace futures
 

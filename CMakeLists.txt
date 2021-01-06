@@ -3,7 +3,7 @@ project(futures)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_library(futures src/futures.cpp)
+add_library(futures src/futures.cpp include/futures/utilities.h)
 target_include_directories(futures PUBLIC include)
 
 
