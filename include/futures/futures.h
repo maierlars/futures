@@ -109,11 +109,11 @@ template <typename T>
 struct future;
 template <typename T>
 struct promise;
-template<typename T>
+template <typename T>
 struct is_future : std::false_type {};
-template<typename T>
+template <typename T>
 struct is_future<future<T>> : std::true_type {};
-template<typename T>
+template <typename T>
 inline constexpr auto is_future_v = is_future<T>::value;
 
 struct promise_abandoned_error : std::exception {
@@ -455,6 +455,7 @@ struct promise : promise_type_based_extension<T> {
    * Abandons the promise. The `abandoned_promise_handler` will be called.
    */
   void abandon() && { detail::abandon_promise(_base.release()); }
+
  private:
   template <typename S>
   friend auto make_promise() -> std::pair<future<S>, promise<S>>;
@@ -475,16 +476,12 @@ template <typename T>
 using future_proxy = future<T>;
 }  // namespace detail
 
-
-
 struct yes_i_know_that_this_call_will_block_t {};
 inline constexpr yes_i_know_that_this_call_will_block_t yes_i_know_that_this_call_will_block;
 
 template <typename T, template <typename> typename F>
 struct future_type_based_extensions;
 namespace detail {
-
-
 
 /**
  * Base class unifies all common operations on futures and future_temporaries.
@@ -524,7 +521,9 @@ struct future_base_base {
     std::unique_lock guard(mutex);
     is_waiting = true;
     cv.wait(guard, [&] { return has_value; });
-    return std::move(box).ref();
+    T value(std::move(box).ref());
+    box.destroy();
+    return value;
   }
 
   /**
@@ -544,12 +543,14 @@ struct future_base_base {
     });
   }
 
-
-  template<typename U, std::enable_if_t<std::is_convertible_v<T, U>, int> = 0>
+  template <typename U, std::enable_if_t<std::is_convertible_v<T, U>, int> = 0>
   auto as() && {
-    return std::move(self()).and_then([](T&&v) noexcept -> U {
-      return std::move(v);
-    });
+    if constexpr (std::is_same_v<T, U>) {
+      return std::move(self());
+    } else {
+      return std::move(self()).and_then(
+          [](T&& v) noexcept -> U { return std::move(v); });
+    }
   }
 
  private:
@@ -557,9 +558,7 @@ struct future_base_base {
   auto& self() const noexcept { return *static_cast<Fut<T> const*>(this); }
 };
 
-
-
-template<typename T, template<typename> typename Fut>
+template <typename T, template <typename> typename Fut>
 struct future_base : future_type_based_extensions<T, Fut> {
   static_assert(std::is_base_of_v<future_base_base<T, Fut>, future_type_based_extensions<T, Fut>>);
 };
@@ -567,7 +566,6 @@ struct future_base : future_type_based_extensions<T, Fut> {
 
 template <typename T, template <typename> typename F>
 struct future_type_based_extensions : detail::future_base_base<T, F> {};
-
 
 /**
  * A temporary object that is used to chain together multiple `and_then` calls
@@ -659,7 +657,9 @@ struct future_temporary
 
   void abandon() && noexcept { std::move(*this).finalize().abandon(); }
 
-  /* implicit */ operator future<R>() && noexcept { return std::move(*this).finalize(); }
+  /* implicit */ operator future<R>() && noexcept {
+    return std::move(*this).finalize();
+  }
 
   auto finalize() && noexcept -> future<R> {
     if constexpr (is_value_inlined) {
@@ -707,6 +707,8 @@ struct future_temporary
   detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
 };
 
+// TODO when adding tags, allow user_provided_additions based on the tag and the type
+
 /**
  * Consuming end of a future-chain. You can add more elements to the chain using
  * this interface.
@@ -722,6 +724,8 @@ struct future : detail::future_base<T, detail::future_proxy>,
 
   static_assert(!std::is_void_v<T>,
                 "void is not supported, use std::monostate instead");
+  static_assert(!is_future_v<T>,
+                "future<future<T>> is a bad idea and thus not supported");
   static_assert(std::is_nothrow_move_constructible_v<T>);
   static_assert(std::is_nothrow_destructible_v<T>);
 
@@ -747,6 +751,12 @@ struct future : detail::future_base<T, detail::future_proxy>,
     }
     std::swap(_base, o._base);
   }
+
+  template <typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
+  future(future<U>&& o) noexcept : future(std::move(o).template as<T>()) {}
+  template <typename U, typename F, typename S, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
+  future(future_temporary<S, F, U>&& o) noexcept
+      : future(std::move(o).template as<U>().finalize()) {}
 
   /**
    * If the future was not used or moved away, the future is abandoned.
@@ -879,6 +889,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
   }
 
   explicit future(detail::continuation_base<T>* ptr) noexcept : _base(ptr) {}
+
  private:
   void cleanup_local_state() {
     detail::box<T>::destroy();
@@ -889,7 +900,8 @@ struct future : detail::future_base<T, detail::future_proxy>,
 };
 
 template <typename T, template <typename> typename Fut>
-struct future_type_based_extensions<expect::expected<T>, Fut> : detail::future_base_base<expect::expected<T>, Fut> {
+struct future_type_based_extensions<expect::expected<T>, Fut>
+    : detail::future_base_base<expect::expected<T>, Fut> {
   /**
    *
    * @tparam F
@@ -934,15 +946,17 @@ struct future_type_based_extensions<expect::expected<T>, Fut> : detail::future_b
     return std::move(self()).await(yes_i_know_that_this_call_will_block).unwrap();
   }
 
-  template<typename... Args>
+  template <typename... Args>
   auto unwrap_or(Args&&... args) {
-    return std::move(self()).and_then([args_tuple = std::make_tuple(std::forward<Args>(args)...)](expect::expected<T>&& e) noexcept {
-      if (e.has_value()) {
-        return std::move(e).unwrap();
-      } else {
-        return std::make_from_tuple<T>(std::move(args_tuple));
-      }
-    });
+    return std::move(self()).and_then(
+        [args_tuple = std::make_tuple(std::forward<Args>(args)...)](
+            expect::expected<T>&& e) noexcept {
+          if (e.has_value()) {
+            return std::move(e).unwrap();
+          } else {
+            return std::make_from_tuple<T>(std::move(args_tuple));
+          }
+        });
   }
 
   /**
@@ -976,9 +990,9 @@ struct future_type_based_extensions<expect::expected<T>, Fut> : detail::future_b
         });
   }
 
-  template<typename U>
+  template <typename U>
   auto as() {
-    return std::move(self()).and_then([](expect::expected<T> && e) noexcept {
+    return std::move(self()).and_then([](expect::expected<T>&& e) noexcept {
       return std::move(e).template as<U>();
     });
   }
@@ -1028,7 +1042,8 @@ auto make_promise() -> std::pair<future<T>, promise<T>> {
 }
 
 template <typename... Ts, template <typename> typename Fut>
-struct future_type_based_extensions<std::tuple<Ts...>, Fut> : detail::future_base_base<std::tuple<Ts...>, Fut>{
+struct future_type_based_extensions<std::tuple<Ts...>, Fut>
+    : detail::future_base_base<std::tuple<Ts...>, Fut> {
   using tuple_type = std::tuple<Ts...>;
 
   /**
@@ -1088,6 +1103,18 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut> : detail::future_bas
   future_type const& self() const noexcept {
     return *static_cast<future_type const*>(this);
   }
+};
+
+template <typename F>
+struct future_traits;
+
+template <typename T>
+struct future_traits<future<T>> {
+  using value_type = T;
+  static constexpr auto is_value_inlined = future<T>::is_value_inlined;
+
+  template <typename U>
+  using future_for_type = future<U>;
 };
 
 }  // namespace futures

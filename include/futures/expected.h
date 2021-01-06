@@ -140,6 +140,9 @@ struct expected : detail::expected_base<T> {
     }
   }
 
+  template<typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
+  expected(expected<U> && u) : expected(std::move(u).template as<T>()) {}
+
   ~expected() {
     if (_has_value) {
       _value.~T();

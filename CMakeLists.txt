@@ -3,11 +3,11 @@ project(futures)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_library(futures src/futures.cpp include/futures/utilities.h)
+add_library(futures src/futures.cpp include/futures/utilities.h include/futures/completion-queue.h)
 target_include_directories(futures PUBLIC include)
 
 
-add_executable(futures-test main.cpp)
+add_executable(futures-test main.cpp test/static-tests.cpp)
 target_compile_options(futures-test PRIVATE "-fsanitize=address")
 target_link_libraries(futures-test PRIVATE asan)
 
