@@ -7,8 +7,9 @@
 
 struct constructor_counter_base {
 
+  constructor_counter_base(constructor_counter_base&&) : _memory(new int(4)) { std::cout << "new counter is " << ++_counter << std::endl; }
   constructor_counter_base() noexcept : _memory(new int(4)) { std::cout << "new counter is " << ++_counter << std::endl; }
-  ~constructor_counter_base() { /*if (_counter.fetch_sub(1) == 0) { std::abort(); }*/ delete _memory; }
+  ~constructor_counter_base() { auto x = _counter.fetch_sub(1); std::cout << "new counter is " << (_counter - 1) << std::endl; if (x == 0) { std::abort(); } delete _memory; }
 
   int* _memory;
 
@@ -112,5 +113,5 @@ int main() {
   std::this_thread::sleep_for(std::chrono::seconds{5});
 
 
-  assert(constructor_counter_base::_counter == 0);
+  std::cout << constructor_counter_base::_counter << std::endl;
 }
