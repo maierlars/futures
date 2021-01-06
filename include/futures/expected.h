@@ -1,6 +1,5 @@
 #ifndef FUTURES_EXPECTED_H
 #define FUTURES_EXPECTED_H
-
 #include <functional>
 #include <stdexcept>
 #include <utility>
@@ -241,6 +240,15 @@ struct expected : detail::expected_base<T> {
     }
 
     return std::move(_value);
+  }
+
+  template<typename U>
+  auto as() -> expected<U> {
+    if (has_value()) {
+      return U(std::move(_value));
+    }
+
+    return _exception;
   }
 
  private:

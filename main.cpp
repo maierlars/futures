@@ -1,31 +1,51 @@
+#include <cassert>
 #include <iostream>
 #include <thread>
 
 #include "futures/futures.h"
 #include "futures/utilities.h"
 
-template <typename T>
-using my_future = futures::future<expect::expected<T>>;
+struct constructor_counter_base {
 
-struct A {
-  explicit A(int x) noexcept : x(std::make_shared<int>(x)) {}
-  std::shared_ptr<int> x = nullptr;
+  constructor_counter_base() noexcept : _memory(new int(4)) { std::cout << "new counter is " << ++_counter << std::endl; }
+  ~constructor_counter_base() { /*if (_counter.fetch_sub(1) == 0) { std::abort(); }*/ delete _memory; }
+
+  int* _memory;
+
+  static std::atomic<std::size_t> _counter;
 };
 
-void foobar() {
-  auto&& [f, p] = futures::make_promise<int>();
+std::atomic<std::size_t> constructor_counter_base::_counter = 0;
 
-  // mutex.lock();
-  std::move(f).and_then([](int x) noexcept {
-    // mutex.unlock();
-    return 14;
-  });
+template <typename T>
+struct constructor_counter : constructor_counter_base {
 
-  throw 12;
-}
+  static std::atomic<std::size_t> _counter;
 
-auto baz() -> my_future<A> {
-  auto&& [f, p] = futures::make_promise<expect::expected<A>>();
+  ~constructor_counter() = default;
+  template <typename... Args>
+  explicit constructor_counter(std::in_place_t, Args&&... args)
+      : _value(std::forward<Args>(args)...) {}
+  constructor_counter(T v) : _value(std::move(v)) {}
+  constructor_counter(constructor_counter const& v) = default;
+  constructor_counter(constructor_counter&& v) noexcept = default;
+  constructor_counter& operator=(constructor_counter const& v) = default;
+  constructor_counter& operator=(constructor_counter&& v) noexcept = default;
+
+  T& operator*() { return _value; }
+  T const& operator*() const { return _value; }
+  T* operator->() { return &_value; }
+  T const* operator->() const { return &_value; }
+
+ private:
+
+  T _value;
+};
+
+using namespace futures;
+
+auto baz() -> future<constructor_counter<int>> {
+  auto&& [f, p] = futures::make_promise<constructor_counter<int>>();
 
   /* */
   std::thread t([p = std::move(p)]() mutable {
@@ -38,35 +58,36 @@ auto baz() -> my_future<A> {
   return std::move(f);
 }
 
-auto foo() -> my_future<int> {
-  return baz()
-      .then([](A&& x) {
-        std::cout << "first then executed " << *x.x << std::endl;
-        return A(*x.x + 4);
+auto foo() -> future<expect::expected<constructor_counter<int>>> {
+  return baz().and_capture([](constructor_counter<int>&& x) {
+                return std::move(x);
+              })
+      .then([](constructor_counter<int>&& x) {
+        std::cout << "first then executed " << *x << std::endl;
+        return *x + 4;
       })
-      .then([](A&& x) {
-        std::cout << "second then executed " << *x.x << std::endl;
-        // throw std::runtime_error("foobar");
-
-        std::cout << "not returning a value " << *x.x << std::endl;
-        return *x.x - 4;
+      .then([](constructor_counter<int>&& x) -> constructor_counter<int> {
+        std::cout << "second then executed " << *x << std::endl;
+        //throw std::runtime_error("foobar");
+        return 1;
       });
 }
 
-auto bar() -> my_future<int> { return my_future<int>(std::in_place, 12); }
+auto bar() -> future<int> { return future<int>(std::in_place, 12); }
 
 int main() {
-  auto value = foo()
-               .then([](int&& x) noexcept {
-                 std::cout << "third then executed " << x << std::endl;
-                 return x + 4;
-               })
-               .rethrow_nested<std::logic_error>("runtime error is not allowed")
-               .catch_error<std::runtime_error>([](auto&& e) noexcept -> int {
-                 std::cout << "caught runtime error " << e.what() << std::endl;
-                 return 5;
-               })
-               .await_unwrap();
+  auto value =
+      foo()
+          .then([](constructor_counter<int>&& x) noexcept {
+            std::cout << "third then executed " << *x << std::endl;
+            return *x + 4;
+          })
+          .rethrow_nested<std::logic_error>("runtime error is not allowed")
+          .catch_error<std::runtime_error>([](auto&& e) noexcept -> int {
+            std::cout << "caught runtime error " << e.what() << std::endl;
+            return 5;
+          })
+          .await_unwrap();
   std::cout << "awaited value " << value << std::endl;
 
   auto&& [a, b] = futures::collect(foo(), baz()).transpose();
@@ -76,16 +97,20 @@ int main() {
 
   std::cout << "second collect returned" << std::endl;
 
-  std::vector<my_future<int>> v;
-  v.emplace_back(foo());
-  v.emplace_back(bar());
-  v.emplace_back(foo());
+  /*
+  std::vector<future<constructor_counter<int>>> v;
+  v.emplace_back(foo().unwrap_or(4));
+  v.emplace_back(bar().as<constructor_counter<int>>());
+  v.emplace_back(foo().unwrap_or(12));
 
   // TODO make this preserve the order
   auto w = futures::collect(v.begin(), v.end()).await(futures::yes_i_know_that_this_call_will_block);
   for (auto&& x : w) {
-    std::cout << x.unwrap() << std::endl;
-  }
+    std::cout << *x << std::endl;
+  }*/
 
   std::this_thread::sleep_for(std::chrono::seconds{5});
+
+
+  assert(constructor_counter_base::_counter == 0);
 }

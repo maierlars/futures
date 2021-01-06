@@ -4,7 +4,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <functional>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <type_traits>
@@ -476,14 +475,16 @@ template <typename T>
 using future_proxy = future<T>;
 }  // namespace detail
 
-template <typename T, template <typename> typename F>
-struct future_type_based_extensions {};
 
 
 struct yes_i_know_that_this_call_will_block_t {};
 inline constexpr yes_i_know_that_this_call_will_block_t yes_i_know_that_this_call_will_block;
 
+template <typename T, template <typename> typename F>
+struct future_type_based_extensions;
 namespace detail {
+
+
 
 /**
  * Base class unifies all common operations on futures and future_temporaries.
@@ -493,7 +494,7 @@ namespace detail {
  * @tparam Fut Parent class template expecting one parameter.
  */
 template <typename T, template <typename> typename Fut>
-struct future_base : future_type_based_extensions<T, Fut> {
+struct future_base_base {
   using value_type = T;
 
   /**
@@ -538,8 +539,16 @@ struct future_base : future_type_based_extensions<T, Fut> {
     static_assert(!expect::is_expected_v<R>, "use and_then instead");
     static_assert(!expect::is_expected_v<T>, "use then instead");
 
-    std::move(self()).and_then([f = std::forward<F>(f)](T&& v) noexcept {
-      return expect::captured_invoke(f, std::move(f));
+    return std::move(self()).and_then([f = std::forward<F>(f)](T&& v) noexcept {
+      return expect::captured_invoke(f, std::move(v));
+    });
+  }
+
+
+  template<typename U, std::enable_if_t<std::is_convertible_v<T, U>, int> = 0>
+  auto as() && {
+    return std::move(self()).and_then([](T&&v) noexcept -> U {
+      return std::move(v);
     });
   }
 
@@ -547,7 +556,18 @@ struct future_base : future_type_based_extensions<T, Fut> {
   auto& self() noexcept { return *static_cast<Fut<T>*>(this); }
   auto& self() const noexcept { return *static_cast<Fut<T> const*>(this); }
 };
+
+
+
+template<typename T, template<typename> typename Fut>
+struct future_base : future_type_based_extensions<T, Fut> {
+  static_assert(std::is_base_of_v<future_base_base<T, Fut>, future_type_based_extensions<T, Fut>>);
+};
 }  // namespace detail
+
+template <typename T, template <typename> typename F>
+struct future_type_based_extensions : detail::future_base_base<T, F> {};
+
 
 /**
  * A temporary object that is used to chain together multiple `and_then` calls
@@ -869,7 +889,7 @@ struct future : detail::future_base<T, detail::future_proxy>,
 };
 
 template <typename T, template <typename> typename Fut>
-struct future_type_based_extensions<expect::expected<T>, Fut> {
+struct future_type_based_extensions<expect::expected<T>, Fut> : detail::future_base_base<expect::expected<T>, Fut> {
   /**
    *
    * @tparam F
@@ -914,6 +934,17 @@ struct future_type_based_extensions<expect::expected<T>, Fut> {
     return std::move(self()).await(yes_i_know_that_this_call_will_block).unwrap();
   }
 
+  template<typename... Args>
+  auto unwrap_or(Args&&... args) {
+    return std::move(self()).and_then([args_tuple = std::make_tuple(std::forward<Args>(args)...)](expect::expected<T>&& e) noexcept {
+      if (e.has_value()) {
+        return std::move(e).unwrap();
+      } else {
+        return std::make_from_tuple<T>(std::move(args_tuple));
+      }
+    });
+  }
+
   /**
    * (join) Flattens the underlying `expected<T>`, i.e. converts
    * `expected<expected<T>>` to `expected<T>`.
@@ -943,6 +974,13 @@ struct future_type_based_extensions<expect::expected<T>, Fut> {
 
           return std::move(e);
         });
+  }
+
+  template<typename U>
+  auto as() {
+    return std::move(self()).and_then([](expect::expected<T> && e) noexcept {
+      return std::move(e).template as<U>();
+    });
   }
 
  private:
@@ -990,7 +1028,7 @@ auto make_promise() -> std::pair<future<T>, promise<T>> {
 }
 
 template <typename... Ts, template <typename> typename Fut>
-struct future_type_based_extensions<std::tuple<Ts...>, Fut> {
+struct future_type_based_extensions<std::tuple<Ts...>, Fut> : detail::future_base_base<std::tuple<Ts...>, Fut>{
   using tuple_type = std::tuple<Ts...>;
 
   /**
