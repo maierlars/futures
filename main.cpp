@@ -23,64 +23,69 @@ TEST(FutureTests, simple_test) {
   });
 
   std::move(guard).trigger();
-  ASSERT_EQ(result, 24);
+  EXPECT_EQ(result, 24);
 }
 
 TEST(FutureTests, simple_abandon) {
   auto&& [future, promise] = futures::make_promise<int>();
 
   int result;
-  std::move(future).finally([&](int x) noexcept {
-    result = x;
-  });
+  std::move(future).finally([&](int x) noexcept { result = x; });
 
-  ASSERT_DEATH(std::move(promise).abandon(), "");
+  EXPECT_DEATH(std::move(promise).abandon(), "");
   std::move(promise).fulfill(12);
-  ASSERT_EQ(result, 12);
+  EXPECT_EQ(result, 12);
 }
 
 struct CollectTest {};
 
 TEST(CollectTest, collect_vector) {
-
   bool reached = false;
   auto&& [f1, p1] = futures::make_promise<int>();
   auto&& [f2, p2] = futures::make_promise<int>();
 
-  auto v = std::vector<future<int>>{};
-  v.emplace_back(std::move(f1));
-  v.emplace_back(std::move(f2));
+  auto fs = std::vector<future<int>>{};
+  auto ps = std::vector<promise<int>>{};
 
-  collect(v.begin(), v.end()).finally([&](auto&& x) noexcept {
-    ASSERT_EQ(x.size(), 2);
-    ASSERT_EQ(x[0], 1);
-    ASSERT_EQ(x[1], 2);
+  const auto number_of_futures = 4;
+
+  for (size_t i = 0; i < number_of_futures; i++) {
+    auto&& [f, p] = futures::make_promise<int>();
+    fs.emplace_back(std::move(f).and_then([i](int x) noexcept { return i * x; }));
+    ps.emplace_back(std::move(p));
+  }
+
+  collect(fs.begin(), fs.end()).finally([&](auto&& xs) noexcept {
+    EXPECT_EQ(xs.size(), number_of_futures);
+    for (size_t i = 0; i < number_of_futures; i++) {
+      EXPECT_EQ(xs[i], i);
+    }
     reached = true;
   });
 
-  std::move(p2).fulfill(2);
-  std::move(p1).fulfill(1);
-  ASSERT_TRUE(reached);
+  for (auto&& p : ps) {
+    std::move(p).fulfill(1);
+  }
+  EXPECT_TRUE(reached);
 }
 
 TEST(CollectTest, collect_tuple) {
-
   bool reached = false;
   auto&& [f1, p1] = futures::make_promise<int>();
   auto&& [f2, p2] = futures::make_promise<int>();
 
   collect(std::move(f1), std::move(f2)).finally([&](auto&& x) noexcept {
-    ASSERT_EQ(std::get<0>(x), 1);
-    ASSERT_EQ(std::get<1>(x), 2);
+    EXPECT_EQ(std::get<0>(x), 1);
+    EXPECT_EQ(std::get<1>(x), 2);
     reached = true;
   });
 
   std::move(p2).fulfill(2);
   std::move(p1).fulfill(1);
-  ASSERT_TRUE(reached);
+  EXPECT_TRUE(reached);
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

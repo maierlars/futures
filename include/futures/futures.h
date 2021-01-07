@@ -176,8 +176,9 @@ void abandon_continuation(continuation_base<T>* base) noexcept {
       static_assert(std::is_nothrow_destructible_v<T>);
       // call abandoned_promise_handler
       base->destroy();
-      delete base;
     }
+
+    delete base;
   }
 }
 
@@ -191,9 +192,8 @@ void abandon_promise(continuation_start<T>* base) noexcept {
       static_assert(std::is_nothrow_destructible_v<T>);
       // call abandoned_promise_handler
       std::abort();
-      base->destroy();
-      delete base;
     }
+    delete base;
   }
 }
 

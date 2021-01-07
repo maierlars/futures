@@ -18,6 +18,9 @@ struct future_traits<future<T>> {
   using value_type = T;
 };
 
+template <typename T, typename F, typename R>
+struct future_traits<future_temporary<T, F, R>> : future_traits<future<R>> {};
+
 template <typename F>
 using future_value_type_t = typename future_traits<F>::value_type;
 template <typename F>

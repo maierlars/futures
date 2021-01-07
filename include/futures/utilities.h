@@ -39,17 +39,19 @@ template <typename... Ts>
 using collect_tuple_context =
     collect_tuple_context_impl<std::index_sequence_for<Ts...>, Ts...>;
 
-template <typename... Ts, std::size_t... Is, typename R = std::tuple<Ts...>>
-auto collect(std::index_sequence<Is...>, future<Ts>&&... fs) -> future<R> {
+template <typename... Fs, std::size_t... Is, typename R = std::tuple<future_value_type_t<Fs>...>>
+auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R> {
   auto&& [f, p] = make_promise<R>();
-  auto ctx = std::make_shared<detail::collect_tuple_context<Ts...>>(std::move(p));
+  auto ctx = std::make_shared<detail::collect_tuple_context<future_value_type_t<Fs>...>>(
+      std::move(p));
 
   // TODO this is not as good as it could be.
   // We have two allocations, one for the context and one for the promise.
   // Third, we use a shared pointer that has more overhead than necessary.
   (std::invoke([&] {
-     std::move(fs).finally(
-         [ctx](Ts&& t) noexcept { ctx->template fulfill<Is>(std::move(t)); });
+     std::move(fs).finally([ctx](future_value_type_t<Fs>&& t) noexcept {
+       ctx->template fulfill<Is>(std::move(t));
+     });
    }),
    ...);
 
@@ -67,9 +69,10 @@ auto collect(std::index_sequence<Is...>, future<Ts>&&... fs) -> future<R> {
  * @param fs Futures that are collected.
  * @return A new my_future that returns a tuple.
  */
-template <typename... Ts, typename R = std::tuple<Ts...>>
-auto collect(future<Ts>&&... fs) -> future<R> {
-  return detail::collect(std::index_sequence_for<Ts...>{}, std::move(fs)...);
+template <typename... Fs,  typename R = std::tuple<Fs...>>
+auto collect(future<Fs>&&... fs) -> future<R> {
+  // TODO maybe we want to extend this function to allow to accept temporary objects
+  return detail::collect(std::index_sequence_for<Fs...>{}, std::move(fs)...);
 }
 
 /**
@@ -83,14 +86,15 @@ auto collect(future<Ts>&&... fs) -> future<R> {
  * @return
  */
 template <typename InputIt, typename V = typename std::iterator_traits<InputIt>::value_type,
-          std::enable_if_t<is_future_v<V>, int> = 0, typename B = typename V::value_type, typename R = std::vector<B>>
+          std::enable_if_t<is_future_v<V>, int> = 0,
+          typename B = typename V::value_type, typename R = std::vector<B>>
 auto collect(InputIt begin, InputIt end) -> future<R> {
   auto&& [f, p] = make_promise<R>();
 
   // TODO this does two allocations
   struct context {
     ~context() {
-      R v; // FIXME do not copy every entry into a vector
+      R v;  // FIXME do not copy every entry into a vector
       v.reserve(size);
       for (std::size_t i = 0; i < size; i++) {
         v.emplace_back(result[i].cast_move());
