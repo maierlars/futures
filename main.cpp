@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 using namespace futures;
+using namespace expect;
 
 struct FutureTests {};
 
@@ -35,6 +36,44 @@ TEST(FutureTests, simple_abandon) {
   EXPECT_DEATH(std::move(promise).abandon(), "");
   std::move(promise).fulfill(12);
   EXPECT_EQ(result, 12);
+}
+
+TEST(FutureTests, expected_throw_test) {
+  auto&& [future, promise] = futures::make_promise<expected<int>>();
+
+  std::move(future)
+      .then([&](int x) {
+        ADD_FAILURE() << "This should never be executed";
+        return 2 * x;
+      })
+      .catch_error<std::runtime_error>([&](auto&& e) {
+        return 5;
+      })
+      .finally([&](expected<int>&& e) noexcept {
+        EXPECT_TRUE(e.has_value());
+        EXPECT_EQ(e.unwrap(), 5);
+      });
+
+  std::move(promise).throw_exception<std::runtime_error>("test");
+}
+
+TEST(FutureTests, expected_no_throw_test) {
+  auto&& [future, promise] = futures::make_promise<expected<int>>();
+
+  std::move(future)
+      .then([&](int x) {
+        return 2 * x;
+      })
+      .catch_error<std::runtime_error>([&](auto&& e) {
+        ADD_FAILURE() << "This should never be executed";
+        return 5;
+      })
+      .finally([&](expected<int>&& e) noexcept {
+        EXPECT_TRUE(e.has_value());
+        EXPECT_EQ(e.unwrap(), 6);
+      });
+
+  std::move(promise).fulfill(3);
 }
 
 struct CollectTest {};

@@ -459,8 +459,7 @@ struct promise : promise_type_based_extension<T> {
   void fulfill_from_tuple(Tuple&& t) && noexcept(
       detail::unpack_tuple_into_v<std::is_nothrow_constructible, tuple_type, T>) {
     return std::move(*this).fulfill_from_tuple_impl(
-        std::forward<Tuple>(t),
-        std::make_index_sequence<std::tuple_size_v<tuple_type>>{});
+        std::forward<Tuple>(t), std::make_index_sequence<std::tuple_size_v<tuple_type>>{});
   }
 
   bool empty() const noexcept { return _base == nullptr; }
@@ -1038,11 +1037,21 @@ struct promise_type_based_extension<expect::expected<T>> {
         expect::captured_invoke(std::forward<F>(f), std::forward<Args>(args)...));
   }
 
+  template <typename E>
+  void throw_into(E&& e) {
+    std::move(self()).fulfill(std::make_exception_ptr(std::forward<E>(e)));
+  }
+
+  template <typename E, typename... Args>
+  void throw_exception(Args&&... args) {
+    std::move(self()).throw_into(E(std::forward<Args>(args)...));
+  }
+
  private:
   using promise_type = promise<expect::expected<T>>;
-  promise_type& self() noexcept { return static_cast<promise<T>&>(*this); }
+  promise_type& self() noexcept { return static_cast<promise_type&>(*this); }
   promise_type const& self() const noexcept {
-    return static_cast<promise<T> const&>(*this);
+    return static_cast<promise_type const&>(*this);
   }
 };
 
@@ -1120,8 +1129,6 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut>
     return *static_cast<future_type const*>(this);
   }
 };
-
-
 
 }  // namespace futures
 
