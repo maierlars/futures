@@ -43,6 +43,16 @@ struct expected_base {
     return captured_invoke(std::forward<F>(f), std::move(self()));
   }
 
+  template<typename E>
+  [[nodiscard]] bool has_exception() const {
+    try {
+      rethrow_error();
+    } catch(E const&) {
+      return true;
+    }
+    return false;
+  }
+
   void rethrow_error() const {
     if (self().has_error()) {
       std::rethrow_exception(self().error());
@@ -81,6 +91,21 @@ struct expected_base {
       try {
         self().rethrow_error();
       } catch (...) {
+        std::throw_with_nested(E(std::forward<Args>(args)...));
+      }
+    } catch (...) {
+      return std::current_exception();
+    }
+
+    return std::move(self());
+  }
+
+  template <typename W, typename E, typename... Args>
+  auto rethrow_nested(Args&&... args) -> expected<T> {
+    try {
+      try {
+        self().rethrow_error();
+      } catch (W const&) {
         std::throw_with_nested(E(std::forward<Args>(args)...));
       }
     } catch (...) {

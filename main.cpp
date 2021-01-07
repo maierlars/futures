@@ -13,57 +13,69 @@
 using namespace futures;
 using namespace expect;
 
+enum class FulfillBehavior { BEFORE, AFTER };
+
 struct FutureTests {};
 
-TEST(FutureTests, simple_test) {
-  auto&& [future, guard] = make_delayed_fulfilled<int>(12);
+TEST(FutureTests, simple_test) {}
 
-  int result;
-  std::move(future).and_then([](int x) noexcept { return 2 * x; }).finally([&](int x) noexcept {
-    result = x;
-  });
-
-  std::move(guard).trigger();
-  EXPECT_EQ(result, 24);
+TEST(FutureTests, simple_abandon_before) {
+  auto&& [future, promise] = futures::make_promise<int>();
+  std::move(promise).abandon();
+  EXPECT_DEATH(std::move(future).finally(
+                   [&](int x) noexcept { EXPECT_EQ(x, 12); }),
+               "");
+  std::move(future).abandon();
 }
 
-TEST(FutureTests, simple_abandon) {
+TEST(FutureTests, simple_abandon_after) {
   auto&& [future, promise] = futures::make_promise<int>();
-
-  int result;
-  std::move(future).finally([&](int x) noexcept { result = x; });
-
+  std::move(future).finally([&](int x) noexcept { EXPECT_EQ(x, 12); });
   EXPECT_DEATH(std::move(promise).abandon(), "");
   std::move(promise).fulfill(12);
-  EXPECT_EQ(result, 12);
 }
 
 TEST(FutureTests, expected_throw_test) {
-  auto&& [future, promise] = futures::make_promise<expected<int>>();
+  {
+    auto&& [future, promise] = futures::make_promise<expected<int>>();
 
-  std::move(future)
-      .then([&](int x) {
-        ADD_FAILURE() << "This should never be executed";
-        return 2 * x;
-      })
-      .catch_error<std::runtime_error>([&](auto&& e) {
-        return 5;
-      })
-      .finally([&](expected<int>&& e) noexcept {
-        EXPECT_TRUE(e.has_value());
-        EXPECT_EQ(e.unwrap(), 5);
-      });
+    std::move(promise).throw_exception<std::runtime_error>("test");
+    std::move(future)
+        .then([&](int x) {
+          ADD_FAILURE() << "This should never be executed";
+          return 2 * x;
+        })
+        .catch_error<std::runtime_error>([&](auto&& e) { return 5; })
+        .finally([&](expected<int>&& e) noexcept {
+          EXPECT_TRUE(e.has_value());
+          EXPECT_EQ(e.unwrap(), 5);
+        });
+  }
 
-  std::move(promise).throw_exception<std::runtime_error>("test");
+  {
+    auto&& [future, promise] = futures::make_promise<expected<int>>();
+
+    std::move(future)
+        .then([&](int x) {
+          ADD_FAILURE() << "This should never be executed";
+          return 2 * x;
+        })
+        .catch_error<std::runtime_error>([&](auto&& e) { return 5; })
+        .finally([&](expected<int>&& e) noexcept {
+          EXPECT_TRUE(e.has_value());
+          EXPECT_EQ(e.unwrap(), 5);
+        });
+
+    std::move(promise).throw_exception<std::runtime_error>("test");
+  }
 }
 
 TEST(FutureTests, expected_no_throw_test) {
   auto&& [future, promise] = futures::make_promise<expected<int>>();
 
+  std::move(promise).fulfill(3);
   std::move(future)
-      .then([&](int x) {
-        return 2 * x;
-      })
+      .then([&](int x) { return 2 * x; })
       .catch_error<std::runtime_error>([&](auto&& e) {
         ADD_FAILURE() << "This should never be executed";
         return 5;
@@ -72,8 +84,33 @@ TEST(FutureTests, expected_no_throw_test) {
         EXPECT_TRUE(e.has_value());
         EXPECT_EQ(e.unwrap(), 6);
       });
+}
 
-  std::move(promise).fulfill(3);
+void print_exception(const std::exception& e, int level = 0) {
+  std::cerr << std::string(level, ' ') << "exception of type "
+            << typeid(e).name() << ": " << e.what() << '\n';
+  try {
+    std::rethrow_if_nested(e);
+  } catch (const std::exception& e) {
+    print_exception(e, level + 1);
+  } catch (...) {
+  }
+}
+
+TEST(FutureTests, expected_rethrow_nested) {
+  auto&& [future, promise] = futures::make_promise<expected<int>>();
+
+  std::move(promise).throw_exception<std::runtime_error>("fail");
+  std::move(future)
+      .rethrow_nested_if<std::runtime_error, std::logic_error>(
+          "exceptions are not allowed")
+      .catch_error<std::runtime_error>([](auto&& e) {
+        ADD_FAILURE() << "This should never be executed";
+        return 1;
+      })
+      .finally([](expected<int>&& e) noexcept {
+        EXPECT_TRUE(e.has_exception<std::logic_error>());
+      });
 }
 
 struct CollectTest {};

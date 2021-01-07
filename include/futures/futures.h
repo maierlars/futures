@@ -462,7 +462,7 @@ struct promise : promise_type_based_extension<T> {
         std::forward<Tuple>(t), std::make_index_sequence<std::tuple_size_v<tuple_type>>{});
   }
 
-  bool empty() const noexcept { return _base == nullptr; }
+  [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
  private:
   template <typename Tuple, std::size_t... Is, typename tuple_type = std::remove_reference_t<Tuple>>
@@ -1001,6 +1001,25 @@ struct future_type_based_extensions<expect::expected<T>, Fut>
             return std::current_exception();
           }
 
+          return std::move(e);
+        });
+  }
+
+  template <typename W, typename E, typename... Args>
+  auto rethrow_nested_if(Args&&... args) noexcept {
+    return std::move(self()).and_then(
+        [args_tuple = std::make_tuple(std::forward<Args>(args)...)](
+            expect::expected<T>&& e) mutable noexcept -> expect::expected<T> {
+          // TODO can we instead forward to expected<T>::rethrow_nested
+          try {
+            try {
+              e.rethrow_error();
+            } catch (W const&) {
+              std::throw_with_nested(std::make_from_tuple<E>(std::move(args_tuple)));
+            }
+          } catch (...) {
+            return std::current_exception();
+          }
           return std::move(e);
         });
   }
