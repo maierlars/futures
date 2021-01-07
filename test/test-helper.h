@@ -44,7 +44,7 @@ auto trigger_delayed(F&& f) noexcept {
 }
 
 template <typename T, typename... Args>
-auto fulfill_delayed(futures::promise<T>&& p, Args&&... args) noexcept {
+auto fulfill_delayed(futures::promise<T, futures::default_tag>&& p, Args&&... args) noexcept {
   return trigger_delayed(
       [p = std::move(p), args_tuple = std::make_tuple(std::forward<Args>(args)...)]() mutable {
         std::move(p).fulfill_from_tuple(args_tuple);
@@ -59,7 +59,7 @@ auto make_delayed_fulfilled(Args&&... args) {
 }
 
 template <typename T>
-auto abandon_delayed(futures::promise<T>&& p) noexcept {
+auto abandon_delayed(futures::promise<T, futures::default_tag>&& p) noexcept {
   return trigger_delayed([p = std::move(p)]() mutable { std::move(p).abandon(); });
 }
 

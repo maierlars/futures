@@ -10,8 +10,20 @@
 
 #include <gtest/gtest.h>
 
-using namespace futures;
 using namespace expect;
+
+struct test_tag {};
+
+template<typename T>
+using future = futures::future<T, test_tag>;
+template<typename T>
+using promise = futures::promise<T, test_tag>;
+
+template<typename T>
+auto make_promise() {
+  return futures::make_promise<T, test_tag>();
+}
+
 
 enum class FulfillBehavior { BEFORE, AFTER };
 
@@ -20,7 +32,7 @@ struct FutureTests {};
 TEST(FutureTests, simple_test) {}
 
 TEST(FutureTests, simple_abandon_before) {
-  auto&& [future, promise] = futures::make_promise<int>();
+  auto&& [future, promise] = make_promise<int>();
   std::move(promise).abandon();
   EXPECT_DEATH(std::move(future).finally(
                    [&](int x) noexcept { EXPECT_EQ(x, 12); }),
@@ -29,7 +41,7 @@ TEST(FutureTests, simple_abandon_before) {
 }
 
 TEST(FutureTests, simple_abandon_after) {
-  auto&& [future, promise] = futures::make_promise<int>();
+  auto&& [future, promise] = make_promise<int>();
   std::move(future).finally([&](int x) noexcept { EXPECT_EQ(x, 12); });
   EXPECT_DEATH(std::move(promise).abandon(), "");
   std::move(promise).fulfill(12);
@@ -37,7 +49,7 @@ TEST(FutureTests, simple_abandon_after) {
 
 TEST(FutureTests, expected_throw_test) {
   {
-    auto&& [future, promise] = futures::make_promise<expected<int>>();
+    auto&& [future, promise] = make_promise<expected<int>>();
 
     std::move(promise).throw_exception<std::runtime_error>("test");
     std::move(future)
@@ -53,7 +65,7 @@ TEST(FutureTests, expected_throw_test) {
   }
 
   {
-    auto&& [future, promise] = futures::make_promise<expected<int>>();
+    auto&& [future, promise] = make_promise<expected<int>>();
 
     std::move(future)
         .then([&](int x) {
@@ -71,7 +83,7 @@ TEST(FutureTests, expected_throw_test) {
 }
 
 TEST(FutureTests, expected_no_throw_test) {
-  auto&& [future, promise] = futures::make_promise<expected<int>>();
+  auto&& [future, promise] = make_promise<expected<int>>();
 
   std::move(promise).fulfill(3);
   std::move(future)
@@ -98,7 +110,7 @@ void print_exception(const std::exception& e, int level = 0) {
 }
 
 TEST(FutureTests, expected_rethrow_nested) {
-  auto&& [future, promise] = futures::make_promise<expected<int>>();
+  auto&& [future, promise] = make_promise<expected<int>>();
 
   std::move(promise).throw_exception<std::runtime_error>("fail");
   std::move(future)
@@ -117,8 +129,8 @@ struct CollectTest {};
 
 TEST(CollectTest, collect_vector) {
   bool reached = false;
-  auto&& [f1, p1] = futures::make_promise<int>();
-  auto&& [f2, p2] = futures::make_promise<int>();
+  auto&& [f1, p1] = make_promise<int>();
+  auto&& [f2, p2] = make_promise<int>();
 
   auto fs = std::vector<future<int>>{};
   auto ps = std::vector<promise<int>>{};
@@ -126,7 +138,7 @@ TEST(CollectTest, collect_vector) {
   const auto number_of_futures = 4;
 
   for (size_t i = 0; i < number_of_futures; i++) {
-    auto&& [f, p] = futures::make_promise<int>();
+    auto&& [f, p] = make_promise<int>();
     fs.emplace_back(std::move(f).and_then([i](int x) noexcept { return i * x; }));
     ps.emplace_back(std::move(p));
   }
@@ -147,8 +159,8 @@ TEST(CollectTest, collect_vector) {
 
 TEST(CollectTest, collect_tuple) {
   bool reached = false;
-  auto&& [f1, p1] = futures::make_promise<int>();
-  auto&& [f2, p2] = futures::make_promise<int>();
+  auto&& [f1, p1] = make_promise<int>();
+  auto&& [f2, p2] = make_promise<int>();
 
   collect(std::move(f1), std::move(f2)).finally([&](auto&& x) noexcept {
     EXPECT_EQ(std::get<0>(x), 1);

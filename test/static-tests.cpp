@@ -17,12 +17,12 @@ struct convertible_to_T {
   operator T() noexcept;
 };
 
-template<typename T>
+template<typename T, typename Tag = futures::default_tag>
 struct convertible_asserts : std::true_type {
-  static_assert(std::is_convertible_v<future<convertible_to_T<T>>, future<T>>);
-  static_assert(std::is_convertible_v<future<expected<convertible_to_T<T>>>, future<expected<T>>>);
+  static_assert(std::is_convertible_v<future<convertible_to_T<T>, Tag>, future<T, Tag>>);
+  static_assert(std::is_convertible_v<future<expected<convertible_to_T<T>>, Tag>, future<expected<T>, Tag>>);
 
-  static_assert(std::is_same_v<future<T>, decltype(std::declval<future<convertible_to_T<T>>>().template as<T>().finalize())>);
+  static_assert(std::is_same_v<future<T, Tag>, decltype(std::declval<future<convertible_to_T<T>, Tag>>().template as<T>().finalize())>);
 };
 
 template<typename T>

@@ -10,8 +10,8 @@ namespace detail {
 template <typename...>
 struct collect_tuple_context_impl;
 
-template <typename... Ts, std::size_t... Is>
-struct collect_tuple_context_impl<std::index_sequence<Is...>, Ts...>
+template <typename... Ts, std::size_t... Is, typename Tag>
+struct collect_tuple_context_impl<Tag, std::index_sequence<Is...>, Ts...>
     : detail::box<Ts, Is>... {
   using tuple_type = std::tuple<Ts...>;
   static constexpr auto fan_in_degree = sizeof...(Ts);
@@ -28,21 +28,21 @@ struct collect_tuple_context_impl<std::index_sequence<Is...>, Ts...>
     detail::box<std::tuple_element_t<I, tuple_type>, I>::emplace(std::forward<Args>(args)...);
   }
 
-  explicit collect_tuple_context_impl(promise<tuple_type> p)
+  explicit collect_tuple_context_impl(promise<tuple_type, Tag> p)
       : out_promise(std::move(p)) {}
 
  private:
-  promise<tuple_type> out_promise;
+  promise<tuple_type, Tag> out_promise;
 };
 
-template <typename... Ts>
+template <typename Tag, typename... Ts>
 using collect_tuple_context =
-    collect_tuple_context_impl<std::index_sequence_for<Ts...>, Ts...>;
+    collect_tuple_context_impl<Tag, std::index_sequence_for<Ts...>, Ts...>;
 
-template <typename... Fs, std::size_t... Is, typename R = std::tuple<future_value_type_t<Fs>...>>
-auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R> {
-  auto&& [f, p] = make_promise<R>();
-  auto ctx = std::make_shared<detail::collect_tuple_context<future_value_type_t<Fs>...>>(
+template <typename Tag, typename... Fs, std::size_t... Is, typename R = std::tuple<future_value_type_t<Fs>...>>
+auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R, Tag> {
+  auto&& [f, p] = make_promise<R, Tag>();
+  auto ctx = std::make_shared<detail::collect_tuple_context<Tag, future_value_type_t<Fs>...>>(
       std::move(p));
 
   // TODO this is not as good as it could be.
@@ -69,10 +69,10 @@ auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R> {
  * @param fs Futures that are collected.
  * @return A new my_future that returns a tuple.
  */
-template <typename... Fs,  typename R = std::tuple<Fs...>>
-auto collect(future<Fs>&&... fs) -> future<R> {
+template <typename... Fs, typename Tag,  typename R = std::tuple<Fs...>>
+auto collect(future<Fs, Tag>&&... fs) -> future<R, Tag> {
   // TODO maybe we want to extend this function to allow to accept temporary objects
-  return detail::collect(std::index_sequence_for<Fs...>{}, std::move(fs)...);
+  return detail::collect<Tag>(std::index_sequence_for<Fs...>{}, std::move(fs)...);
 }
 
 /**
@@ -87,9 +87,9 @@ auto collect(future<Fs>&&... fs) -> future<R> {
  */
 template <typename InputIt, typename V = typename std::iterator_traits<InputIt>::value_type,
           std::enable_if_t<is_future_v<V>, int> = 0,
-          typename B = typename V::value_type, typename R = std::vector<B>>
-auto collect(InputIt begin, InputIt end) -> future<R> {
-  auto&& [f, p] = make_promise<R>();
+          typename B = future_value_type_t<V>, typename R = std::vector<B>, typename Tag = future_tag_type_t<V>>
+auto collect(InputIt begin, InputIt end) -> future<R, Tag> {
+  auto&& [f, p] = make_promise<R, Tag>();
 
   // TODO this does two allocations
   struct context {
@@ -103,11 +103,11 @@ auto collect(InputIt begin, InputIt end) -> future<R> {
 
       std::move(out_promise).fulfill(std::move(v));
     }
-    explicit context(promise<R> p, std::size_t size)
+    explicit context(promise<R, Tag> p, std::size_t size)
         : out_promise(std::move(p)),
           size(size),
           result(std::make_unique<detail::box<B>[]>(size)) {}
-    promise<R> out_promise;
+    promise<R, Tag> out_promise;
     std::size_t size;
     std::unique_ptr<detail::box<B>[]> result;
   };
