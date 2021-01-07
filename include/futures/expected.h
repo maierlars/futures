@@ -120,7 +120,10 @@ template <typename T>
 struct expected : detail::expected_base<T> {
   static_assert(!std::is_void_v<T> && !std::is_reference_v<T>);
 
-  expected() = delete;
+  template <typename U = T, std::enable_if_t<std::is_default_constructible_v<U>, int> = 0>
+  expected() noexcept(std::is_nothrow_default_constructible_v<T>)
+      : expected(std::in_place) {}
+
   /* implicit */ expected(std::exception_ptr p)
       : _exception(std::move(p)), _has_value(false) {}
   /* implicit */ expected(T t) : _value(std::move(t)), _has_value(true) {}
@@ -140,8 +143,8 @@ struct expected : detail::expected_base<T> {
     }
   }
 
-  template<typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
-  expected(expected<U> && u) : expected(std::move(u).template as<T>()) {}
+  template <typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
+  expected(expected<U>&& u) : expected(std::move(u).template as<T>()) {}
 
   ~expected() {
     if (_has_value) {
@@ -245,7 +248,7 @@ struct expected : detail::expected_base<T> {
     return std::move(_value);
   }
 
-  template<typename U>
+  template <typename U>
   auto as() -> expected<U> {
     if (has_value()) {
       return U(std::move(_value));

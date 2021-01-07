@@ -3,6 +3,15 @@
 using namespace futures;
 using namespace expect;
 
+struct default_constructible {
+  default_constructible() = default;
+};
+
+struct non_default_constructible {
+  non_default_constructible() = delete;
+};
+
+
 template<typename T>
 struct convertible_to_T {
   operator T() noexcept;

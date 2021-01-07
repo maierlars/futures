@@ -401,16 +401,14 @@ auto compose(F&& f, G&& g) {
   return composer<F, G>(std::forward<F>(f), std::forward<G>(g));
 }
 
-template <typename... Ts, std::size_t... Is>
-auto tuple_as_ref(std::tuple<Ts...>& t, std::index_sequence<Is...>)
-    -> std::tuple<Ts&...> {
-  return std::forward_as_tuple(std::get<Is>(t)...);
-}
+template <template <typename...> typename T, typename...>
+struct unpack_tuple_into;
 
-template <typename... Ts>
-auto tuple_as_ref(std::tuple<Ts...>& t) -> std::tuple<Ts&...> {
-  return tuple_as_ref(t, std::index_sequence_for<Ts...>{});
-}
+template <template <typename...> typename T, typename... Vs, typename... Us>
+struct unpack_tuple_into<T, std::tuple<Us...>, Vs...> : T<Vs..., Us...> {};
+
+template <template <typename...> typename T, typename... Vs>
+inline constexpr auto unpack_tuple_into_v = unpack_tuple_into<T, Vs...>::value;
 
 }  // namespace detail
 
@@ -453,10 +451,28 @@ struct promise : promise_type_based_extension<T> {
 
   /**
    * Abandons the promise. The `abandoned_promise_handler` will be called.
+   * This either generates a default value for `T` or calls `std::abort()`.
    */
   void abandon() && { detail::abandon_promise(_base.release()); }
 
+  template <typename Tuple, typename tuple_type = std::remove_reference_t<Tuple>>
+  void fulfill_from_tuple(Tuple&& t) && noexcept(
+      detail::unpack_tuple_into_v<std::is_nothrow_constructible, tuple_type, T>) {
+    return std::move(*this).fulfill_from_tuple_impl(
+        std::forward<Tuple>(t),
+        std::make_index_sequence<std::tuple_size_v<tuple_type>>{});
+  }
+
+  bool empty() const noexcept { return _base == nullptr; }
+
  private:
+  template <typename Tuple, std::size_t... Is, typename tuple_type = std::remove_reference_t<Tuple>>
+  void fulfill_from_tuple_impl(Tuple&& t, std::index_sequence<Is...>) && noexcept(
+      std::is_nothrow_constructible_v<T, std::tuple_element_t<Is, tuple_type>...>) {
+    static_assert(std::is_constructible_v<T, std::tuple_element_t<Is, tuple_type>...>);
+    std::move(*this).fulfill(std::get<Is>(std::forward<Tuple>(t))...);
+  }
+
   template <typename S>
   friend auto make_promise() -> std::pair<future<S>, promise<S>>;
   explicit promise(detail::continuation_start<T>* base) : _base(base) {}
@@ -1105,17 +1121,7 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut>
   }
 };
 
-template <typename F>
-struct future_traits;
 
-template <typename T>
-struct future_traits<future<T>> {
-  using value_type = T;
-  static constexpr auto is_value_inlined = future<T>::is_value_inlined;
-
-  template <typename U>
-  using future_for_type = future<U>;
-};
 
 }  // namespace futures
 

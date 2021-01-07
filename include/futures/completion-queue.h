@@ -5,6 +5,7 @@
 #include <mutex>
 #include <queue>
 #include "futures.h"
+#include "traits.h"
 
 namespace futures {
 
