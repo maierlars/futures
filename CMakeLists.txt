@@ -4,7 +4,7 @@ project(futures)
 set(CMAKE_CXX_STANDARD 17)
 
 
-add_library(futures src/futures.cpp include/futures/utilities.h include/futures/completion-queue.h include/futures/traits.h)
+add_library(futures src/futures.cpp include/mellon/utilities.h include/mellon/completion-queue.h include/mellon/traits.h)
 target_include_directories(futures PUBLIC include)
 
 
@@ -15,7 +15,7 @@ if (FUTURES_BUILD_TESTS)
     set(BUILD_GMOCK OFF)
     add_subdirectory(${FUTURES_GTEST_DIRECTORY})
 
-    add_executable(futures-test main.cpp test/static-tests.cpp test/test-helper.cpp test/test-helper.h arangodb.h)
+    add_executable(futures-test main.cpp test/static-tests.cpp test/test-helper.cpp test/test-helper.h arangodb.h test/exception-tests.cpp)
     target_compile_options(futures-test PRIVATE "-fsanitize=address")
     target_link_libraries(futures-test PRIVATE asan)
     target_link_libraries(futures-test PRIVATE gtest)

@@ -124,21 +124,21 @@ struct tag_trait<default_tag> {
 
   template <typename T>
   struct abandoned_future_handler {
-    void operator()(T&&) noexcept {} // this is like ignoring a return value
+    void operator()(T&&) noexcept {}  // this is like ignoring a return value
   };
 
   template <typename T>
   struct abandoned_future_handler<expect::expected<T>> {
     void operator()(expect::expected<T>&& e) noexcept {
       if (e.has_error()) {
-        e.rethrow_error(); // this is like an uncaught exception
+        e.rethrow_error();  // this is like an uncaught exception
       }
     }
   };
 
   template <typename T>
   struct abandoned_promise_handler {
-    T operator()() noexcept { std::abort(); } // in general we can not continue
+    T operator()() noexcept { std::abort(); }  // in general we can not continue
   };
 
   template <typename T>
@@ -165,14 +165,14 @@ inline constexpr auto is_future_v = is_future<T>::value;
 
 namespace detail {
 
-template<typename Tag, typename T>
+template <typename Tag, typename T>
 struct handler_helper {
   static T abandon_promise() noexcept {
     return detail::tag_trait_helper<Tag>::template abandon_promise<T>();
   }
 
-  template<typename U>
-  static void abandon_future(U && u) noexcept {
+  template <typename U>
+  static void abandon_future(U&& u) noexcept {
     detail::tag_trait_helper<Tag>::template abandon_future<T>(std::forward<U>(u));
   }
 };
@@ -183,10 +183,8 @@ template <typename T>
 struct continuation_base;
 template <typename T>
 struct continuation_start;
-
 template <typename T, typename F, typename R>
 struct continuation_step;
-
 template <typename T, typename F>
 struct continuation_final;
 
@@ -205,6 +203,7 @@ void fulfill_continuation(continuation_base<T>* base,
                                              std::memory_order_acquire)) {
       if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
         std::invoke(*expected, base->cast_move());
+        // FIXME this is a recursive call. Build this a loop!
       }
 
       base->destroy();
@@ -246,14 +245,12 @@ void abandon_promise(continuation_start<T>* base) noexcept {
   }
 }
 
-template <typename T, typename... Args>
+template <typename Tag, typename T, typename... Args>
 auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {
   static_assert(std::is_nothrow_constructible_v<T, Args...>,
                 "type should be nothrow constructable");
   auto frame = new (std::nothrow) T(std::forward<Args>(args)...);
-  if (frame == nullptr) {
-    std::abort();
-  }
+  detail::tag_trait_helper<Tag>::assert_true(frame != nullptr);
   return frame;
 }
 
@@ -271,8 +268,8 @@ void insert_continuation_final(continuation_base<T>* base, F&& f) noexcept {
   }
 
   auto step =
-      detail::allocate_frame_noexcept<continuation_final<T, F>>(std::in_place,
-                                                                std::forward<F>(f));
+      detail::allocate_frame_noexcept<Tag, continuation_final<T, F>>(std::in_place,
+                                                                     std::forward<F>(f));
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
@@ -302,9 +299,8 @@ auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
     return std::move(fut);
   }
 
-  auto step =
-      detail::allocate_frame_noexcept<continuation_step<T, F, R>>(std::in_place,
-                                                                  std::forward<G>(f));
+  auto step = detail::allocate_frame_noexcept<Tag, continuation_step<T, F, R>>(
+      std::in_place, std::forward<G>(f));
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
@@ -575,9 +571,6 @@ struct future_base_base {
   template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
   auto and_capture(F&& f) && noexcept -> Fut<expect::expected<R>> {
-    static_assert(!expect::is_expected_v<R>, "use and_then instead");
-    static_assert(!expect::is_expected_v<T>, "use then instead");
-
     return std::move(self()).and_then([f = std::forward<F>(f)](T&& v) noexcept {
       return expect::captured_invoke(f, std::move(v));
     });
@@ -608,7 +601,7 @@ struct future_base : future_type_based_extensions<T, Fut, Tag> {
   static_assert(std::is_base_of_v<future_base_base<T, Fut>, future_type_based_extensions<T, Fut, Tag>>);
 };
 
-template<typename Tag, typename T>
+template <typename Tag, typename T>
 using small_box_tag = small_box<T, tag_trait_helper<Tag>::small_value_size()>;
 }  // namespace detail
 
@@ -675,7 +668,8 @@ struct future_temporary
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
         auto fut = future_temporary<T, decltype(composition), S, Tag>(
-            std::in_place, std::move(composition), detail::small_box_tag<Tag, T>::cast_move());
+            std::in_place, std::move(composition),
+            detail::small_box_tag<Tag, T>::cast_move());
         cleanup_local_state();
         return fut;
       }
@@ -713,9 +707,10 @@ struct future_temporary
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
         static_assert(std::is_nothrow_move_constructible_v<R>);
-        auto f = future<R, Tag>(std::in_place,
-                                std::invoke(detail::function_store<F>::function_self(),
-                                    detail::small_box_tag<Tag, T>::cast_move()));
+        auto f =
+            future<R, Tag>(std::in_place,
+                           std::invoke(detail::function_store<F>::function_self(),
+                                       detail::small_box_tag<Tag, T>::cast_move()));
         static_assert(std::is_nothrow_destructible_v<T>);
         cleanup_local_state();
         return f;
@@ -853,15 +848,20 @@ struct future
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
   auto and_then(F&& f) && noexcept {
-    if constexpr (is_value_inlined) {
-      if (holds_inline_value()) {
-        auto fut = future_temporary<T, F, R, Tag>(std::in_place, std::forward<F>(f),
-            detail::small_box_tag<Tag, T>::cast_move());
-        cleanup_local_state();
-        return fut;
+    if constexpr (detail::tag_trait_helper<Tag>::is_disable_temporaries()) {
+      return std::move(*this).and_then_direct(std::forward<F>(f));
+    } else {
+      if constexpr (is_value_inlined) {
+        if (holds_inline_value()) {
+          auto fut =
+              future_temporary<T, F, R, Tag>(std::in_place, std::forward<F>(f),
+                                             detail::small_box_tag<Tag, T>::cast_move());
+          cleanup_local_state();
+          return fut;
+        }
       }
+      return future_temporary<T, F, R, Tag>(std::forward<F>(f), std::move(_base));
     }
-    return future_temporary<T, F, R, Tag>(std::forward<F>(f), std::move(_base));
   }
 
   /**
@@ -886,7 +886,8 @@ struct future
         return std::move(fut);
       }
     }
-    return detail::insert_continuation_step<T, F, R>(_base.release(), std::forward<F>(f));
+    return detail::insert_continuation_step<Tag, T, F, R>(_base.release(),
+                                                          std::forward<F>(f));
   }
 
   /**
@@ -960,15 +961,16 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @param f
    * @return
    */
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
+  template <typename F,
+            std::enable_if_t<std::conjunction_v<std::is_invocable<F, T&&>, std::negation<std::is_invocable<F, expect::expected<T>&&>>>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
   auto then(F&& f) && noexcept {
+    // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
     return std::move(self()).and_then(
         [f = std::forward<F>(f)](expect::expected<T>&& e) noexcept -> expect::expected<R> {
           return std::move(e).map_value(f);
         });
   }
-
 
   /**
    * If the `expected<T>` contains a value, the callback is called with the value.
@@ -979,9 +981,10 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @return
    */
   template <typename F, std::enable_if_t<std::is_invocable_v<F, expect::expected<T>&&>, int> = 0,
-            typename R = std::invoke_result_t<F, T&&>, typename U = T,
-            std::enable_if_t<!expect::is_expected_v<U>, int> = 0>
+            typename R = std::invoke_result_t<F, expect::expected<T>&&>,
+            typename U = T, std::enable_if_t<!expect::is_expected_v<U>, int> = 0>
   auto then(F&& f) && noexcept {
+    // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
     return std::move(self()).and_capture(std::forward<F>(f));
   }
 
@@ -1044,7 +1047,7 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
   template <typename U = T, std::enable_if_t<expect::is_expected_v<U>, int> = 0>
   auto flatten() {
     return std::move(self()).and_then(
-        [](expect::expected<T>&& e) { return std::move(e).flatten(); });
+        [](expect::expected<T>&& e) noexcept { return std::move(e).flatten(); });
   }
 
   /**
@@ -1077,9 +1080,9 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
   }
 
   /**
-   * Rethrows an exception of type `W` as a nested exception combined with `E(Args...)`.
-   * `E` is only constructed if an exception was found. The arguments are copied
-   * into the chain.
+   * Rethrows an exception of type `W` as a nested exception combined with
+   * `E(Args...)`. `E` is only constructed if an exception was found. The
+   * arguments are copied into the chain.
    * @tparam E
    * @tparam Args
    * @param args
@@ -1141,13 +1144,18 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
         expect::captured_invoke(std::forward<F>(f), std::forward<Args>(args)...));
   }
 
+  template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
+  void fulfill(Args&&... args) && noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+    std::move(self()).fulfill(std::in_place, std::forward<Args>(args)...);
+  }
+
   /**
    * Throws `e` into the promise.
    * @tparam E
    * @param e
    */
   template <typename E>
-  void throw_into(E&& e) {
+  void throw_into(E&& e) noexcept {
     std::move(self()).fulfill(std::make_exception_ptr(std::forward<E>(e)));
   }
 
@@ -1157,8 +1165,8 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
    * @tparam E
    * @param e
    */
-  template <typename E, typename... Args>
-  void throw_exception(Args&&... args) {
+  template <typename E, typename... Args, std::enable_if_t<std::is_constructible_v<E, Args...>, int> = 0>
+  void throw_exception(Args&&... args) noexcept(std::is_nothrow_constructible_v<E, Args...>) {
     std::move(self()).throw_into(E(std::forward<Args>(args)...));
   }
 
@@ -1174,6 +1182,7 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
  * Create a new pair of future and promise with value type `T`.
  * @tparam T value type
  * @return pair of future and promise.
+ * @throws std::bad_alloc
  */
 template <typename T, typename Tag = default_tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {

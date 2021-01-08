@@ -1,72 +1,49 @@
 #ifndef FUTURES_TEST_HELPER_H
 #define FUTURES_TEST_HELPER_H
-#include <futures/futures.h>
+#include <mellon/futures.h>
+#include <gtest/gtest.h>
 
-#include <memory>
-#include <thread>
+struct default_test_tag {};
+struct no_inline_test_tag {};
+struct always_inline_test_tag {};
+struct no_temporaries_test_tag {};
 
-template <typename F>
-struct delayed_context : F {
-  explicit delayed_context(F f) : F(std::move(f)) {}
+using my_test_tags = ::testing::Types<default_test_tag, no_inline_test_tag, always_inline_test_tag, no_temporaries_test_tag>;
 
-  void run() {
-    F::operator()();
-  }
+template <>
+struct mellon::tag_trait<default_test_tag> {
+  struct assertion_handler {
+    void operator()(bool test) const noexcept { ASSERT_TRUE(test); } // TRI_ASSERT(test);
+  };
 
-  void trigger() {
-    run();
-  }
+  template<typename T>
+  using abandoned_future_handler = mellon::use_default_handler<T>;
+  template<typename T>
+  using abandoned_promise_handler = mellon::use_default_handler<T>;
 };
 
-template <typename F>
-struct delayed_guard {
-  explicit delayed_guard(std::shared_ptr<delayed_context<F>> ctx)
-      : ctx(std::move(ctx)) {}
-  delayed_guard(delayed_guard const&) = delete;
-  delayed_guard(delayed_guard&&) noexcept = default;
-  delayed_guard& operator=(delayed_guard const&) = delete;
-  delayed_guard& operator=(delayed_guard&&) noexcept = default;
-
-  ~delayed_guard() = default;
-
-  void trigger() && {
-    ctx->trigger();
-  }
-
- private:
-  std::shared_ptr<delayed_context<F>> ctx;
+template <>
+struct mellon::tag_trait<no_inline_test_tag> : mellon::tag_trait<default_test_tag> {
+  static constexpr auto small_value_size = 0; // turn off
+};
+template <>
+struct mellon::tag_trait<always_inline_test_tag> : mellon::tag_trait<default_test_tag> {
+  static constexpr auto small_value_size = std::numeric_limits<std::size_t>::max(); // turn off
+};
+template <>
+struct mellon::tag_trait<no_temporaries_test_tag> : mellon::tag_trait<default_test_tag> {
+  static constexpr bool disable_temporaries = true;
 };
 
-template <typename F, typename... Args>
-auto trigger_delayed(F&& f) noexcept {
-  auto ctx = std::make_shared<delayed_context<F>>(std::forward<F>(f));
-  return delayed_guard{ctx};
-}
-
-template <typename T, typename... Args>
-auto fulfill_delayed(mellon::promise<T, mellon::default_tag>&& p, Args&&... args) noexcept {
-  return trigger_delayed(
-      [p = std::move(p), args_tuple = std::make_tuple(std::forward<Args>(args)...)]() mutable {
-        std::move(p).fulfill_from_tuple(args_tuple);
-      });
-}
-
-template <typename T, typename... Args>
-auto make_delayed_fulfilled(Args&&... args) {
-  auto&& [f, p] = mellon::make_promise<T>();
-  return std::make_pair(std::move(f),
-                        fulfill_delayed(std::move(p), std::forward<Args>(args)...));
-}
 
 template <typename T>
-auto abandon_delayed(mellon::promise<T, mellon::default_tag>&& p) noexcept {
-  return trigger_delayed([p = std::move(p)]() mutable { std::move(p).abandon(); });
-}
+using future = mellon::future<T, default_test_tag>;
+template <typename T>
+using promise = mellon::promise<T, default_test_tag>;
 
 template <typename T>
-auto make_delayed_abandon() {
-  auto&& [f, p] = mellon::make_promise<T>();
-  return std::make_pair(std::move(f), abandon_delayed(std::move(p)));
+auto make_promise() {
+  return mellon::make_promise<T, default_test_tag>();
 }
 
 struct constructor_counter_base {
@@ -107,6 +84,22 @@ struct constructor_counter : constructor_counter_base {
 
  private:
   T _value;
+};
+
+struct signal_marker {
+  explicit signal_marker(const char *name) : name(name) {}
+
+  ~signal_marker() {
+    EXPECT_TRUE(signal_marker_was_reached) << "Signal marker was not reached: " << name;
+  }
+
+  void signal() noexcept {
+    signal_marker_was_reached = true;
+  }
+
+ private:
+  const char *name = nullptr;
+  bool signal_marker_was_reached = false;
 };
 
 #endif  // FUTURES_TEST_HELPER_H

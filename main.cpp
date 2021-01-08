@@ -2,34 +2,14 @@
 #include <iostream>
 #include <thread>
 
-#include <futures/completion-queue.h>
-#include <futures/futures.h>
-#include <futures/utilities.h>
+#include <mellon/completion-queue.h>
+#include <mellon/futures.h>
+#include <mellon/utilities.h>
 
 #include "test/test-helper.h"
 
-#include <gtest/gtest.h>
-
 using namespace expect;
 
-struct test_tag {};
-
-template <>
-struct mellon::tag_trait<test_tag> {
-  struct assertion_handler {
-    void operator()(bool test) const noexcept { ASSERT_TRUE(test); } // TRI_ASSERT(test);
-  };
-};
-
-template <typename T>
-using future = mellon::future<T, test_tag>;
-template <typename T>
-using promise = mellon::promise<T, test_tag>;
-
-template <typename T>
-auto make_promise() {
-  return mellon::make_promise<T, test_tag>();
-}
 
 struct FutureTests {};
 
@@ -229,11 +209,17 @@ struct HandlerTest {
 
     static bool was_called;
   };
+
 };
 using handler_test_tag = HandlerTest::tag;
 
 template <>
-struct mellon::tag_trait<handler_test_tag> : mellon::tag_trait<test_tag> {};
+struct mellon::tag_trait<handler_test_tag> : mellon::tag_trait<default_test_tag> {
+  template<typename T>
+  using abandoned_future_handler = HandlerTest::handler<T>;
+  template<typename T>
+  using abandoned_promise_handler = HandlerTest::handler<T>;
+};
 
 
 template <typename T>

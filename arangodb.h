@@ -1,6 +1,6 @@
 #ifndef FUTURES_ARANGODB_H
 #define FUTURES_ARANGODB_H
-#include <futures/futures.h>
+#include <mellon/futures.h>
 
 #define TRI_ASSERT(x)
 #define THROW_ARANGO_EXCEPTION(x) throw (x);
