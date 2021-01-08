@@ -1,6 +1,6 @@
 #include "futures/futures.h"
 
-using namespace futures;
+using namespace mellon;
 
 detail::invalid_pointer_type detail::invalid_pointer_inline_value;
 detail::invalid_pointer_type detail::invalid_pointer_future_abandoned;

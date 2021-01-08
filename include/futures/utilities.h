@@ -5,7 +5,7 @@
 #include <tuple>
 #include "futures.h"
 
-namespace futures {
+namespace mellon {
 namespace detail {
 template <typename...>
 struct collect_tuple_context_impl;
@@ -61,11 +61,11 @@ auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R, Tag> {
 }  // namespace detail
 
 /**
- * Collect creates a new my_future that awaits all given futures and completes
- * when all futures have received their value. It then returns a tuple
+ * Collect creates a new my_future that awaits all given mellon and completes
+ * when all mellon have received their value. It then returns a tuple
  * containing all the individual values.
  *
- * @tparam Ts value types of the futures (deduced)
+ * @tparam Ts value types of the mellon (deduced)
  * @param fs Futures that are collected.
  * @return A new my_future that returns a tuple.
  */
@@ -76,7 +76,7 @@ auto collect(future<Fs, Tag>&&... fs) -> future<R, Tag> {
 }
 
 /**
- * Collects all futures in the range [begin, end). The result is new my_future
+ * Collects all mellon in the range [begin, end). The result is new my_future
  * returning a `std::vector<T>`. The results might appear in a different order
  * then they appeared in the input range. If a promise is abandoned, its result
  * is omitted from the result vector.
@@ -122,6 +122,6 @@ auto collect(InputIt begin, InputIt end) -> future<R, Tag> {
   return std::move(f);
 }
 
-}  // namespace futures
+}  // namespace mellon
 
 #endif  // FUTURES_UTILITIES_H

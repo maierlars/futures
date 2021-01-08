@@ -7,11 +7,11 @@
 #include "futures.h"
 #include "traits.h"
 
-namespace futures {
+namespace mellon {
 
 template <typename Fut>
 struct completion_context : std::enable_shared_from_this<completion_context<Fut>> {
-  using trait = future_traits<Fut>;
+  using trait = future_trait<Fut>;
   using value_type = typename trait::value_type;
 
   void register_future(Fut&& f) {
@@ -71,6 +71,6 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
   std::condition_variable cv;
 };
 
-}  // namespace futures
+}  // namespace mellon
 
 #endif  // FUTURES_COMPLETION_QUEUE_H

@@ -44,7 +44,7 @@ auto trigger_delayed(F&& f) noexcept {
 }
 
 template <typename T, typename... Args>
-auto fulfill_delayed(futures::promise<T, futures::default_tag>&& p, Args&&... args) noexcept {
+auto fulfill_delayed(mellon::promise<T, mellon::default_tag>&& p, Args&&... args) noexcept {
   return trigger_delayed(
       [p = std::move(p), args_tuple = std::make_tuple(std::forward<Args>(args)...)]() mutable {
         std::move(p).fulfill_from_tuple(args_tuple);
@@ -53,19 +53,19 @@ auto fulfill_delayed(futures::promise<T, futures::default_tag>&& p, Args&&... ar
 
 template <typename T, typename... Args>
 auto make_delayed_fulfilled(Args&&... args) {
-  auto&& [f, p] = futures::make_promise<T>();
+  auto&& [f, p] = mellon::make_promise<T>();
   return std::make_pair(std::move(f),
                         fulfill_delayed(std::move(p), std::forward<Args>(args)...));
 }
 
 template <typename T>
-auto abandon_delayed(futures::promise<T, futures::default_tag>&& p) noexcept {
+auto abandon_delayed(mellon::promise<T, mellon::default_tag>&& p) noexcept {
   return trigger_delayed([p = std::move(p)]() mutable { std::move(p).abandon(); });
 }
 
 template <typename T>
 auto make_delayed_abandon() {
-  auto&& [f, p] = futures::make_promise<T>();
+  auto&& [f, p] = mellon::make_promise<T>();
   return std::make_pair(std::move(f), abandon_delayed(std::move(p)));
 }
 

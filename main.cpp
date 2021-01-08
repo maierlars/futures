@@ -14,25 +14,29 @@ using namespace expect;
 
 struct test_tag {};
 
-template<typename T>
-using future = futures::future<T, test_tag>;
-template<typename T>
-using promise = futures::promise<T, test_tag>;
+template <>
+struct mellon::tag_trait<test_tag> {
+  struct assertion_handler {
+    void operator()(bool test) const noexcept { ASSERT_TRUE(test); } // TRI_ASSERT(test);
+  };
+};
 
-template<typename T>
+template <typename T>
+using future = mellon::future<T, test_tag>;
+template <typename T>
+using promise = mellon::promise<T, test_tag>;
+
+template <typename T>
 auto make_promise() {
-  return futures::make_promise<T, test_tag>();
+  return mellon::make_promise<T, test_tag>();
 }
-
-
-enum class FulfillBehavior { BEFORE, AFTER };
 
 struct FutureTests {};
 
 TEST(FutureTests, simple_test) {}
 
 TEST(FutureTests, simple_abandon_before) {
-  auto&& [future, promise] = make_promise<int>();
+  auto&& [future, promise] = mellon::make_promise<int, mellon::default_tag>();
   std::move(promise).abandon();
   EXPECT_DEATH(std::move(future).finally(
                    [&](int x) noexcept { EXPECT_EQ(x, 12); }),
@@ -41,7 +45,7 @@ TEST(FutureTests, simple_abandon_before) {
 }
 
 TEST(FutureTests, simple_abandon_after) {
-  auto&& [future, promise] = make_promise<int>();
+  auto&& [future, promise] = mellon::make_promise<int, mellon::default_tag>();
   std::move(future).finally([&](int x) noexcept { EXPECT_EQ(x, 12); });
   EXPECT_DEATH(std::move(promise).abandon(), "");
   std::move(promise).fulfill(12);
@@ -125,6 +129,42 @@ TEST(FutureTests, expected_rethrow_nested) {
       });
 }
 
+template <typename T>
+struct convertible_from_T {
+  convertible_from_T(T t) : t(std::move(t)) {}
+  T& value() { return t; }
+
+ private:
+  T t;
+};
+
+template <typename T>
+struct convertible_into_T {
+  virtual operator T() { return t; };
+  explicit convertible_into_T(T t) : t(std::move(t)) {}
+  T& value() { return t; }
+
+ private:
+  T t;
+};
+
+TEST(FutureTests, as_something) {
+  auto&& [future, promise] = make_promise<int>();
+
+  std::move(future).as<convertible_from_T<int>>().finally(
+      [](convertible_from_T<int>&& e) noexcept { EXPECT_EQ(e.value(), 10); });
+
+  std::move(promise).fulfill(10);
+}
+
+TEST(FutureTests, as_something_from) {
+  auto&& [future, promise] = make_promise<convertible_into_T<int>>();
+
+  std::move(future).as<int>().finally([](int e) noexcept { EXPECT_EQ(e, 10); });
+
+  std::move(promise).fulfill(10);
+}
+
 struct CollectTest {};
 
 TEST(CollectTest, collect_vector) {
@@ -172,6 +212,74 @@ TEST(CollectTest, collect_tuple) {
   std::move(p1).fulfill(1);
   EXPECT_TRUE(reached);
 }
+
+struct HandlerTest {
+  struct tag {};
+
+  template<typename T>
+  struct handler {
+
+    T operator()() noexcept {
+      was_called = true;
+      return {};
+    }
+    void operator()(T && t) noexcept {
+      was_called = true;
+    }
+
+    static bool was_called;
+  };
+};
+using handler_test_tag = HandlerTest::tag;
+
+template <>
+struct mellon::tag_trait<handler_test_tag> : mellon::tag_trait<test_tag> {};
+
+
+template <typename T>
+bool HandlerTest::handler<T>::was_called = false;
+
+TEST(HandlerTest, test_abandoned_promise_handler) {
+  auto&& [f, p] = mellon::make_promise<int, handler_test_tag>();
+
+  std::move(f).finally([](int x) noexcept {
+    EXPECT_EQ(x, 0);  // should be default constructed by the handler
+  });
+
+  HandlerTest::handler<int>::was_called = false;
+  std::move(p).abandon();
+  ASSERT_TRUE(HandlerTest::handler<int>::was_called);
+}
+
+TEST(HandlerTest, test_abandoned_future_handler) {
+  auto&& [f, p] = mellon::make_promise<int, handler_test_tag>();
+  std::move(p).fulfill(1);
+  HandlerTest::handler<int>::was_called = false;
+  std::move(f).abandon();
+  ASSERT_TRUE(HandlerTest::handler<int>::was_called);
+}
+
+#include "arangodb.h"
+
+struct ArangoDBTests {};
+
+TEST(ArangoDBTests, test_futures) {
+  using namespace arangodb;
+  auto&& [f, p] = futures::makePromise<futures::Try<int>>();
+
+  std::move(p).fulfill(12);
+
+  auto f2 = std::move(f).then([](int x) {
+                          return x * 2;
+                        }).finalize();
+
+  EXPECT_TRUE(f2.holds_inline_value());
+
+  std::move(f2).finally([](expected<int> && e) noexcept {
+    EXPECT_EQ(e.unwrap(), 24);
+  });
+}
+
 
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

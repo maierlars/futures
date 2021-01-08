@@ -1,6 +1,6 @@
 #include <futures/futures.h>
 
-using namespace futures;
+using namespace mellon;
 using namespace expect;
 
 struct default_constructible {
@@ -17,7 +17,7 @@ struct convertible_to_T {
   operator T() noexcept;
 };
 
-template<typename T, typename Tag = futures::default_tag>
+template<typename T, typename Tag = mellon::default_tag>
 struct convertible_asserts : std::true_type {
   static_assert(std::is_convertible_v<future<convertible_to_T<T>, Tag>, future<T, Tag>>);
   static_assert(std::is_convertible_v<future<expected<convertible_to_T<T>>, Tag>, future<expected<T>, Tag>>);
