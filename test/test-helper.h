@@ -1,40 +1,58 @@
 #ifndef FUTURES_TEST_HELPER_H
 #define FUTURES_TEST_HELPER_H
-#include <mellon/futures.h>
 #include <gtest/gtest.h>
+#include <mellon/futures.h>
 
 struct default_test_tag {};
 struct no_inline_test_tag {};
 struct always_inline_test_tag {};
 struct no_temporaries_test_tag {};
+struct no_temporaries_always_inline_test_tag {};
+template<typename... Ts>
+struct only_inline_these_types {};
 
-using my_test_tags = ::testing::Types<default_test_tag, no_inline_test_tag, always_inline_test_tag, no_temporaries_test_tag>;
+using my_test_tags =
+    ::testing::Types<default_test_tag, no_inline_test_tag, always_inline_test_tag, no_temporaries_test_tag, no_temporaries_always_inline_test_tag>;
 
 template <>
 struct mellon::tag_trait<default_test_tag> {
   struct assertion_handler {
-    void operator()(bool test) const noexcept { ASSERT_TRUE(test); } // TRI_ASSERT(test);
+    void operator()(bool test) const noexcept {
+      ASSERT_TRUE(test);
+    }  // TRI_ASSERT(test);
   };
 
-  template<typename T>
+  template <typename T>
   using abandoned_future_handler = mellon::use_default_handler<T>;
-  template<typename T>
+  template <typename T>
   using abandoned_promise_handler = mellon::use_default_handler<T>;
 };
 
 template <>
 struct mellon::tag_trait<no_inline_test_tag> : mellon::tag_trait<default_test_tag> {
-  static constexpr auto small_value_size = 0; // turn off
+  static constexpr auto small_value_size = 0;  // turn off
 };
 template <>
 struct mellon::tag_trait<always_inline_test_tag> : mellon::tag_trait<default_test_tag> {
-  static constexpr auto small_value_size = std::numeric_limits<std::size_t>::max(); // turn off
+  static constexpr auto small_value_size = std::numeric_limits<std::size_t>::max();  // turn off
 };
 template <>
 struct mellon::tag_trait<no_temporaries_test_tag> : mellon::tag_trait<default_test_tag> {
   static constexpr bool disable_temporaries = true;
 };
-
+template <>
+struct mellon::tag_trait<no_temporaries_always_inline_test_tag>
+    : mellon::tag_trait<default_test_tag> {
+  static constexpr bool disable_temporaries = true;
+  static constexpr auto small_value_size = std::numeric_limits<std::size_t>::max();  // turn off
+};
+template <typename... Ts>
+struct mellon::tag_trait<only_inline_these_types<Ts...>>
+    : mellon::tag_trait<default_test_tag> {
+  static constexpr bool disable_temporaries = true;
+  template<typename T>
+  static constexpr bool is_type_inlined = (std::is_same_v<T, Ts> || ...);
+};
 
 template <typename T>
 using future = mellon::future<T, default_test_tag>;
@@ -87,18 +105,16 @@ struct constructor_counter : constructor_counter_base {
 };
 
 struct signal_marker {
-  explicit signal_marker(const char *name) : name(name) {}
+  explicit signal_marker(const char* name) : name(name) {}
 
   ~signal_marker() {
     EXPECT_TRUE(signal_marker_was_reached) << "Signal marker was not reached: " << name;
   }
 
-  void signal() noexcept {
-    signal_marker_was_reached = true;
-  }
+  void signal() noexcept { signal_marker_was_reached = true; }
 
  private:
-  const char *name = nullptr;
+  const char* name = nullptr;
   bool signal_marker_was_reached = false;
 };
 

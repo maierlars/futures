@@ -94,12 +94,12 @@ struct box<void> {
   void emplace() noexcept {}
 };
 
-template <typename T, std::size_t, typename = void>
+template <typename T, bool inline_value>
 struct small_box : box<void> {
   static constexpr bool stores_value = false;
 };
-template <typename T, std::size_t Size>
-struct small_box<T, Size, std::enable_if_t<sizeof(T) <= Size>> : box<T> {
+template <typename T>
+struct small_box<T, true> : box<T> {
   using box<T>::box;
   static constexpr bool stores_value = true;
 };
@@ -602,7 +602,7 @@ struct future_base : future_type_based_extensions<T, Fut, Tag> {
 };
 
 template <typename Tag, typename T>
-using small_box_tag = small_box<T, tag_trait_helper<Tag>::small_value_size()>;
+using small_box_tag = small_box<T, tag_trait_helper<Tag>::template is_type_inlined<T>()>;
 }  // namespace detail
 
 template <typename T, template <typename> typename F, typename Tag>

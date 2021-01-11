@@ -6,7 +6,7 @@
 #include <mellon/futures.h>
 #include <mellon/utilities.h>
 
-#include "test/test-helper.h"
+#include "test-helper.h"
 
 using namespace expect;
 
@@ -245,7 +245,7 @@ TEST(HandlerTest, test_abandoned_future_handler) {
   ASSERT_TRUE(HandlerTest::handler<int>::was_called);
 }
 
-#include "arangodb.h"
+#include "../arangodb.h"
 
 struct ArangoDBTests {};
 

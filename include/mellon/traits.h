@@ -77,6 +77,12 @@ struct tag_trait_helper {
   struct has_is_disable_temporaries<tag, std::void_t<decltype(tag_trait<tag>::disable_temporaries)>>
       : std::true_type {};
 
+  template <typename tag, typename T, typename = void>
+  struct has_is_type_inlined : std::false_type {};
+  template <typename tag, typename T>
+  struct has_is_type_inlined<tag, T, std::void_t<decltype(tag_trait<tag>::template is_type_inlined<T>)>>
+      : std::true_type {};
+
   static void assert_true(bool condition) noexcept {
     if constexpr (has_assertion_handler<Tag>::value) {
       using assertion_handler = typename tag_trait<Tag>::assertion_handler;
@@ -120,6 +126,15 @@ struct tag_trait_helper {
     } else {
       static_assert(!std::is_same_v<default_tag, Tag>);
       return tag_trait_helper<default_tag>::small_value_size();
+    }
+  }
+
+  template<typename T>
+  static constexpr bool is_type_inlined() {
+    if constexpr (has_is_type_inlined<Tag, T>::value) {
+      return tag_trait<Tag>::template is_type_inlined<T>;
+    } else {
+      return sizeof(T) < small_value_size();
     }
   }
 
