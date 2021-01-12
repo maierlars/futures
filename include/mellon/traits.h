@@ -44,6 +44,19 @@ struct is_use_default_handler<use_default_handler<T>> : std::true_type {};
 template <typename T>
 inline constexpr auto is_use_default_handler_v = is_use_default_handler<T>::value;
 
+template<typename Tag, typename T, template<typename> typename Fut, typename = void>
+struct user_defined_additions {
+  struct type {};
+};
+
+template<typename Tag, typename T, template<typename> typename Fut>
+struct user_defined_additions<Tag, T, Fut, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_additions<T, Fut>{})>> {
+  using type = typename tag_trait<Tag>::template user_defined_additions<T, Fut>;
+};
+
+template<typename Tag, typename T, template<typename> typename Fut>
+using user_defined_additions_t = typename user_defined_additions<Tag, T, Fut>::type;
+
 namespace detail {
 template <typename Tag>
 struct tag_trait_helper {

@@ -597,7 +597,7 @@ struct future_base_base {
 };
 
 template <typename T, template <typename> typename Fut, typename Tag>
-struct future_base : future_type_based_extensions<T, Fut, Tag> {
+struct future_base : user_defined_additions_t<Tag, T, Fut>, future_type_based_extensions<T, Fut, Tag> {
   static_assert(std::is_base_of_v<future_base_base<T, Fut>, future_type_based_extensions<T, Fut, Tag>>);
 };
 
@@ -743,9 +743,9 @@ struct future_temporary
         _base(FUTURES_INVALID_POINTER_INLINE_VALUE(T)) {}
 
   template <typename, typename>
-  friend class future;
+  friend struct future;
   template <typename, typename, typename, typename>
-  friend class future_temporary;
+  friend struct future_temporary;
   // TODO move _base pointer to future_base.
   detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
 };
