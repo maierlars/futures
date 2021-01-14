@@ -57,6 +57,19 @@ struct user_defined_additions<Tag, T, Fut, std::void_t<decltype(typename tag_tra
 template<typename Tag, typename T, template<typename> typename Fut>
 using user_defined_additions_t = typename user_defined_additions<Tag, T, Fut>::type;
 
+template<typename Tag, typename T, typename = void>
+struct user_defined_promise_additions {
+  struct type {};
+};
+
+template<typename Tag, typename T>
+struct user_defined_promise_additions<Tag, T, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_promise_additions<T>{})>> {
+  using type = typename tag_trait<Tag>::template user_defined_promise_additions<T>;
+};
+
+template<typename Tag, typename T>
+using user_defined_promise_additions_t = typename user_defined_promise_additions<Tag, T>::type;
+
 namespace detail {
 template <typename Tag>
 struct tag_trait_helper {

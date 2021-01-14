@@ -402,6 +402,8 @@ struct composer : composer_tag<F, 0>, composer_tag<G, 1> {
       : composer_tag<F, 0>(std::in_place, std::forward<S>(s)),
         composer_tag<G, 1>(std::in_place, std::forward<T>(t)) {}
 
+  composer(composer&&) noexcept = default;
+
   template <typename... Args>
   auto operator()(Args&&... args) noexcept {
     static_assert(std::is_nothrow_invocable_v<G, Args...>);
@@ -439,7 +441,8 @@ struct promise_type_based_extension {};
  * @tparam T
  */
 template <typename T, typename Tag>
-struct promise : promise_type_based_extension<T, Tag> {
+struct promise : promise_type_based_extension<T, Tag>,
+                 user_defined_promise_additions_t<Tag, T> {
   /**
    * Destroies the promise. If the promise has not been fulfilled or moved away
    * it will be abandoned.
@@ -526,7 +529,7 @@ namespace detail {
  * @tparam T Value type
  * @tparam Fut Parent class template expecting one parameter.
  */
-template <typename T, template <typename> typename Fut>
+template <typename Tag, typename T, template <typename> typename Fut>
 struct future_base_base {
   using value_type = T;
 
@@ -570,7 +573,7 @@ struct future_base_base {
    */
   template <typename F, std::enable_if_t<std::is_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
-  auto and_capture(F&& f) && noexcept -> Fut<expect::expected<R>> {
+  auto and_capture(F&& f) && noexcept {
     return std::move(self()).and_then([f = std::forward<F>(f)](T&& v) noexcept {
       return expect::captured_invoke(f, std::move(v));
     });
@@ -583,6 +586,7 @@ struct future_base_base {
    */
   template <typename U, std::enable_if_t<std::is_convertible_v<T, U>, int> = 0>
   auto as() && {
+    static_assert(!expect::is_expected_v<T>);
     if constexpr (std::is_same_v<T, U>) {
       return std::move(self());
     } else {
@@ -591,22 +595,30 @@ struct future_base_base {
     }
   }
 
+  void fulfill(promise<T, Tag>&& p) && noexcept {
+    std::move(self()).finally([p = std::move(p)](T && t) mutable noexcept {
+      p.fulfill(std::move(t));
+    });
+  }
+
  private:
   auto& self() noexcept { return *static_cast<Fut<T>*>(this); }
   auto& self() const noexcept { return *static_cast<Fut<T> const*>(this); }
 };
 
 template <typename T, template <typename> typename Fut, typename Tag>
-struct future_base : user_defined_additions_t<Tag, T, Fut>, future_type_based_extensions<T, Fut, Tag> {
-  static_assert(std::is_base_of_v<future_base_base<T, Fut>, future_type_based_extensions<T, Fut, Tag>>);
+struct future_base : user_defined_additions_t<Tag, T, Fut>,
+                     future_type_based_extensions<T, Fut, Tag> {
+  static_assert(std::is_base_of_v<future_base_base<Tag, T, Fut>, future_type_based_extensions<T, Fut, Tag>>);
 };
 
 template <typename Tag, typename T>
-using small_box_tag = small_box<T, tag_trait_helper<Tag>::template is_type_inlined<T>()>;
+using small_box_tag =
+    small_box<T, tag_trait_helper<Tag>::template is_type_inlined<T>()>;
 }  // namespace detail
 
 template <typename T, template <typename> typename F, typename Tag>
-struct future_type_based_extensions : detail::future_base_base<T, F> {};
+struct future_type_based_extensions : detail::future_base_base<Tag, T, F> {};
 
 /**
  * A temporary object that is used to chain together multiple `and_then` calls
@@ -624,6 +636,9 @@ struct future_temporary
       private detail::function_store<F>,
       private detail::small_box_tag<Tag, T> {
   static constexpr auto is_value_inlined = detail::small_box_tag<Tag, T>::stores_value;
+
+  static_assert(!is_future_v<R>,
+                "future<future<T>> is a bad idea and thus not supported");
 
   future_temporary(future_temporary const&) = delete;
   future_temporary& operator=(future_temporary const&) = delete;
@@ -789,11 +804,14 @@ struct future
       std::move(*this).abandon();
     }
     detail::tag_trait_helper<Tag>::assert_true(_base == nullptr);
-    if (o.holds_inline_value()) {
-      detail::small_box_tag<Tag, T>::emplace(o.cast_move());
-      o.destroy();  // o will have _base == nullptr
+    if constexpr (is_value_inlined) {
+      if (o.holds_inline_value()) {
+        detail::small_box_tag<Tag, T>::emplace(o.cast_move());
+        o.destroy();  // o will have _base == nullptr
+      }
     }
     std::swap(_base, o._base);
+    return *this;
   }
 
   template <typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
@@ -824,6 +842,18 @@ struct future
    */
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit future(std::in_place_t, Args&&... args) noexcept(
+      std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
+    if constexpr (is_value_inlined) {
+      detail::small_box_tag<Tag, T>::emplace(std::forward<Args>(args)...);
+      _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(T));
+    } else {
+      _base.reset(new detail::continuation_base<T>(std::in_place,
+                                                   std::forward<Args>(args)...));
+    }
+  }
+
+  template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
+  future(Args&&... args) noexcept(
       std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
     if constexpr (is_value_inlined) {
       detail::small_box_tag<Tag, T>::emplace(std::forward<Args>(args)...);
@@ -942,6 +972,9 @@ struct future
   explicit future(detail::continuation_base<T>* ptr) noexcept : _base(ptr) {}
 
  private:
+  template <typename, typename>
+  friend struct future;
+
   void cleanup_local_state() {
     detail::small_box_tag<Tag, T>::destroy();
     _base.reset();
@@ -952,7 +985,7 @@ struct future
 
 template <typename T, template <typename> typename Fut, typename Tag>
 struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
-    : detail::future_base_base<expect::expected<T>, Fut> {
+    : detail::future_base_base<Tag, expect::expected<T>, Fut> {
   /**
    * If the `expected<T>` contains a value, the callback is called with the value.
    * Otherwise it is not executed. Any thrown exception is captured by the `expected<T>`.
@@ -961,15 +994,22 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @param f
    * @return
    */
-  template <typename F,
-            std::enable_if_t<std::conjunction_v<std::is_invocable<F, T&&>, std::negation<std::is_invocable<F, expect::expected<T>&&>>>, int> = 0,
-            typename R = std::invoke_result_t<F, T&&>>
+  template <typename F, typename U = T, std::enable_if_t<std::is_invocable_v<F, U&&>, int> = 0,
+            typename R = std::invoke_result_t<F, U&&>>
   auto then(F&& f) && noexcept {
     // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
+    static_assert(std::is_nothrow_move_constructible_v<F>);
     return std::move(self()).and_then(
-        [f = std::forward<F>(f)](expect::expected<T>&& e) noexcept -> expect::expected<R> {
-          return std::move(e).map_value(f);
-        });
+        [f = std::forward<F>(f)](expect::expected<T>&& e) mutable noexcept
+        -> expect::expected<R> { return std::move(e).map_value(f); });
+  }
+
+  template <typename F, typename U = T, std::enable_if_t<std::is_void_v<U>, int> = 0,
+            std::enable_if_t<std::is_invocable_v<F>, int> = 0, typename R = std::invoke_result_t<F>>
+  auto then(F&& f) && noexcept {
+    return std::move(self()).and_then(
+        [f = std::forward<F>(f)](expect::expected<T>&& e) mutable noexcept
+        -> expect::expected<R> { return std::move(e).map_value(f); });
   }
 
   /**
@@ -980,13 +1020,13 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @param f
    * @return
    */
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, expect::expected<T>&&>, int> = 0,
+  /*template <typename F, std::enable_if_t<std::is_invocable_v<F, expect::expected<T>&&>, int> = 0,
             typename R = std::invoke_result_t<F, expect::expected<T>&&>,
             typename U = T, std::enable_if_t<!expect::is_expected_v<U>, int> = 0>
   auto then(F&& f) && noexcept {
     // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
     return std::move(self()).and_capture(std::forward<F>(f));
-  }
+  }*/
 
   /**
    * Catches an exception of type `E` and calls `f` with `E const&`. If the
@@ -998,8 +1038,8 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @param f
    * @return A new future containing a value if the exception was caught.
    */
-  template <typename E, typename F, std::enable_if_t<std::is_invocable_r_v<T, F, E const&>, int> = 0,
-            std::enable_if_t<!std::is_void_v<T>, int> = 0>
+  template <typename E, typename F, typename U = T,
+      std::enable_if_t<std::is_invocable_r_v<U, F, E const&>, int> = 0>
   auto catch_error(F&& f) && noexcept {
     return std::move(self()).and_then(
         [f = std::forward<F>(f)](expect::expected<T>&& e) noexcept -> expect::expected<T> {
@@ -1012,8 +1052,14 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @return Returns the value contained in expected, or throws the
    * contained exception.
    */
+  template <typename U = T, std::enable_if_t<!std::is_void_v<U>, int> = 0>
   T await_unwrap() {
     return std::move(self()).await(yes_i_know_that_this_call_will_block).unwrap();
+  }
+
+  template <typename U = T, std::enable_if_t<std::is_void_v<U>, int> = 0>
+  void await_unwrap() {
+    std::move(self()).await(yes_i_know_that_this_call_will_block);
   }
 
   /**
@@ -1112,11 +1158,12 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @tparam U
    * @return
    */
-  template <typename U>
+  template <typename U, std::enable_if_t<expect::is_expected_v<U>, int> = 0, typename R = typename U::value_type>
   auto as() {
-    return std::move(self()).and_then([](expect::expected<T>&& e) noexcept {
-      return std::move(e).template as<U>();
-    });
+    return std::move(self()).and_then(
+        [](expect::expected<T>&& e) noexcept -> expect::expected<R> {
+          return std::move(e).template as<R>();
+        });
   }
 
  private:
@@ -1192,7 +1239,7 @@ auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
 
 template <typename... Ts, template <typename> typename Fut, typename Tag>
 struct future_type_based_extensions<std::tuple<Ts...>, Fut, Tag>
-    : detail::future_base_base<std::tuple<Ts...>, Fut> {
+    : detail::future_base_base<Tag, std::tuple<Ts...>, Fut> {
   using tuple_type = std::tuple<Ts...>;
 
   /**

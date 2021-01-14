@@ -77,7 +77,12 @@ struct expected_base {
                try {
                  std::rethrow_exception(self().error());
                } catch (std::decay_t<E> const& e) {
-                 return std::invoke(std::forward<F>(f), e);
+                 if constexpr (std::is_void_v<T>) {
+                   std::invoke(std::forward<F>(f), e);
+                   return {};
+                 } else {
+                   return std::invoke(std::forward<F>(f), e);
+                 }
                }
              }
              return std::move(self());
@@ -311,6 +316,15 @@ struct expected<void> : detail::expected_base<void> {
       return _exception;
     }
     return nullptr;
+  }
+
+  template <typename F, std::enable_if_t<std::is_invocable_v<F>, int> = 0>
+  auto map_value(F&& f) && noexcept -> expected<std::invoke_result_t<F>> {
+    if (has_error()) {
+      return std::move(_exception);
+    }
+
+    return captured_invoke(std::forward<F>(f));
   }
 
  private:

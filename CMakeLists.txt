@@ -4,12 +4,12 @@ project(futures)
 set(CMAKE_CXX_STANDARD 17)
 
 
-add_library(futures src/futures.cpp include/mellon/utilities.h include/mellon/completion-queue.h include/mellon/traits.h)
-target_include_directories(futures PUBLIC include)
+add_library(mellon src/futures.cpp include/mellon/utilities.h include/mellon/completion-queue.h include/mellon/traits.h)
+target_include_directories(mellon PUBLIC include)
 
 
 set(FUTURES_GTEST_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/gtest")
-option(FUTURES_BUILD_TESTS "Build tests for futures using GTest" ON)
+option(FUTURES_BUILD_TESTS "Build tests for futures using GTest" Off)
 if (FUTURES_BUILD_TESTS)
     add_subdirectory(${FUTURES_GTEST_DIRECTORY})
     add_subdirectory(test)
