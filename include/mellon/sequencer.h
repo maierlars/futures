@@ -5,7 +5,8 @@
 
 namespace mellon {
 
-
+template <typename T>
+inline constexpr auto always_false_v = false;
 
 template <typename Tag, typename... Ts>
 struct multi_resources : std::tuple<future<Ts, Tag>...> {
@@ -52,34 +53,45 @@ struct sequence_state_machine_impl<Tag, R, std::index_sequence<Is...>, Fs...>
       : index_function_tag<Is, Fs>(std::move(fs))..., promise(std::move(promise)) {}
 
   template <std::size_t I, typename... Ts>
-  void run_next(std::tuple<Ts...>&& t) noexcept {
+  void run_next(Ts&&... t) noexcept {
     if constexpr (I == sizeof...(Is)) {
-      std::move(promise).fulfill_from_tuple(t);
+      // last state fulfills the promise
+      std::move(promise).fulfill(std::forward<Ts>(t)...);
     } else {
       // invoke the function
-      auto result = invoke_nth<I>(std::move(t));
-      using result_type = decltype(result);
-      static_assert(is_future_v<result_type>);
-      using future_result = typename result_type::value_type;
-      std::move(result).finally([self = this->shared_from_this()](future_result&& tuple) noexcept {
-        self->template run_next<I + 1>(std::make_tuple(tuple));
+      auto future = invoke_nth<I>(std::forward<Ts>(t)...);
+      using future_type = decltype(future);
+      static_assert(is_future_v<future_type>);
+      using future_result = typename future_type::value_type;
+      std::move(future).finally([self = this->shared_from_this()](future_result&& result) noexcept {
+        self->template run_next<I + 1>(std::move(result));
       });
     }
   }
 
  private:
   template <std::size_t I, typename F = std::tuple_element_t<I, std::tuple<Fs...>>>
-  auto nth_function() -> index_function_tag<I, F>& {
+  auto nth_function() noexcept -> index_function_tag<I, F>& {
     return *this;
   }
 
   template <std::size_t I, typename... Ts>
-  auto invoke_nth(std::tuple<Ts...>&& t) {
-    return std::apply(nth_function<I>(), std::move(t));
+  auto invoke_nth(Ts&&... t) noexcept {
+    static_assert(std::is_nothrow_invocable_v<nth_function_type<I>, Ts&&...>);
+    return std::invoke(nth_function<I>(), std::forward<Ts>(t)...);
   }
+
+  template <std::size_t I>
+  using nth_function_type = std::tuple_element_t<I, std::tuple<Fs...>>;
 
   mellon::promise<R, Tag> promise;
 };
+
+template <typename T, typename FutureTag>
+auto sequence(future<T, FutureTag> f);
+
+struct empty_init_sequence_start_t {};
+inline constexpr auto empty_init_sequence_start = empty_init_sequence_start_t{};
 
 template <typename...>
 struct sequence_builder_impl;
@@ -90,18 +102,15 @@ using sequence_builder =
 template <typename FutureTag, typename InputType, typename OutputType, std::size_t... Is, typename... Fs>
 struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequence<Is...>, Fs...>
     : private index_function_tag<Is, Fs>... {
-  static_assert(is_tuple_v<OutputType>);
-
-  template <typename G, typename R = std::invoke_result_t<G, OutputType>>
-  auto append(G&& g) {
-    static_assert(is_future_v<R>);
-    using new_output_type = typename R::value_type;
-    static_assert(is_tuple_v<new_output_type>);
-    return sequence_builder<FutureTag, InputType, new_output_type, Fs..., std::decay_t<G>>(
+  template <typename G, std::enable_if_t<std::is_nothrow_invocable_v<G, OutputType&&>, int> = 0,
+            typename ReturnValue = std::invoke_result_t<G, OutputType&&>,
+            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
+  auto append(G&& g) && /* TODO exception specifier */ {
+    return sequence_builder<FutureTag, InputType, ValueType, Fs..., std::decay_t<G>>(
         std::in_place, std::move(nth_function<Is>())..., std::forward<G>(g));
   }
 
-  template <typename G, std::enable_if_t<is_applicable_v<std::is_invocable, G, OutputType>, int> = 0,
+  /*template <typename G, std::enable_if_t<is_applicable_v<std::is_invocable, G, OutputType>, int> = 0,
             typename R = apply_result_t<G, OutputType>>
   auto then_do(G&& g) {
     if constexpr (is_future_v<R>) {
@@ -117,33 +126,55 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
         return future<R, FutureTag>{std::in_place, std::apply(g, params)};
       });
     }
+  }*/
+
+  auto compose() && -> mellon::future<OutputType, FutureTag> {
+    /* TODO exception specifier -- do we need a nothrow alloc? */
+    auto&& [f, p] = mellon::make_promise<OutputType, FutureTag>();
+    auto machine =
+        std::make_shared<sequence_state_machine<FutureTag, OutputType, Fs...>>(
+            std::move(nth_function<Is>())..., std::move(p));
+    machine->template run_next<0>(empty_init_sequence_start);
+    return std::move(f);
   }
+
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, OutputType&&>, int> = 0,
+            typename ReturnValue = std::invoke_result_t<G, OutputType&&>,
+            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
+  auto append_capture(G&& g) && /* TODO exception specifier */ {
+    return move_self().append([g = std::forward<G>(g)](OutputType&& t) mutable noexcept
+                  -> future<expect::expected<ValueType>, FutureTag> {
+      auto result = expect::captured_invoke(g, std::move(t));
+      if (result.has_value()) {
+        return std::move(result.unwrap()).template as<expect::expected<ValueType>>();
+      } else {
+        return future<expect::expected<ValueType>, FutureTag>{std::in_place,
+                                                              result.error()};
+      }
+    });
+  }
+
+  template <typename G, typename U = OutputType, std::enable_if_t<expect::is_expected_v<U>, int> = 0,
+            typename V = typename U::value_type, typename ReturnValue = std::invoke_result_t<G, V&&>,
+            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type,
+            std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
+  auto then_do(G&& g) && {
+    return move_self().append_capture([g = std::forward<G>(g)](OutputType&& v) mutable
+                          -> future<ValueType, FutureTag> {
+      return std::invoke(g, std::move(v).unwrap());
+    });
+  }
+
+ private:
+  template <typename S, typename TT>
+  friend auto sequence(future<S, TT> f);
+  template <typename...>
+  friend struct sequence_builder_impl;
 
   template <typename... Gs>
   explicit sequence_builder_impl(std::in_place_t, Gs&&... gs)
       : index_function_tag<Is, Fs>(std::forward<Gs>(gs))... {}
 
-  // template <typename U = OutputType, std::enable_if_t<std::tuple_size_v<U> != 1, int> = 0>
-  auto compose() -> mellon::future<OutputType, FutureTag> {
-    auto&& [f, p] = mellon::make_promise<OutputType, FutureTag>();
-    auto machine =
-        std::make_shared<sequence_state_machine<FutureTag, OutputType, Fs...>>(
-            std::move(nth_function<Is>())..., std::move(p));
-    machine->template run_next<0>(std::make_tuple());
-    return std::move(f);
-  }
-
-  /*template <typename U = OutputType, std::enable_if_t<std::tuple_size_v<U> == 1, int> = 0,
-            typename T = std::tuple_element_t<0, U>>
-  auto compose() -> mellon::future<T, FutureTag> {
-    auto&& [f, p] = mellon::make_promise<OutputType, FutureTag>();
-    auto machine =
-        std::make_shared<sequence_state_machine<FutureTag, OutputType, Fs...>>(
-            std::move(p), std::move(nth_function<Is>())...);
-    return std::move(f).template get<0>();
-  }*/
-
- private:
   template <typename... Ts>
   static auto collect(std::tuple<Ts...>&& ts) {
     return mellon::collect(std::move(ts));
@@ -153,13 +184,17 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
   auto& nth_function() {
     return index_function_tag<I, F>::ref();
   }
+
+  auto&& move_self() {
+    return std::move(*this);
+  }
 };
 
 template <typename T, typename Tag>
 struct init_sequence {
   explicit init_sequence(future<T, Tag>&& f) : init_future(std::move(f)) {}
 
-  auto operator()() noexcept -> future<T, Tag> {
+  auto operator()(empty_init_sequence_start_t) noexcept -> future<T, Tag> {
     return std::move(init_future);
   }
 
@@ -168,7 +203,7 @@ struct init_sequence {
 
 template <typename T, typename FutureTag>
 auto sequence(future<T, FutureTag> f) {
-  return sequence_builder<FutureTag, std::tuple<>, std::tuple<T>, init_sequence<T, FutureTag>>(
+  return sequence_builder<FutureTag, empty_init_sequence_start_t, T, init_sequence<T, FutureTag>>(
       std::in_place, init_sequence(std::move(f)));
 }
 

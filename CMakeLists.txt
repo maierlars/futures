@@ -9,7 +9,7 @@ target_include_directories(mellon PUBLIC include)
 
 
 set(FUTURES_GTEST_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/gtest")
-option(FUTURES_BUILD_TESTS "Build tests for futures using GTest" Off)
+option(FUTURES_BUILD_TESTS "Build tests for futures using GTest" On)
 if (FUTURES_BUILD_TESTS)
     add_subdirectory(${FUTURES_GTEST_DIRECTORY})
     add_subdirectory(test)
