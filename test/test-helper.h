@@ -18,6 +18,9 @@ template <>
 struct mellon::tag_trait<default_test_tag> {
   struct assertion_handler {
     void operator()(bool test) const noexcept {
+      if (!test) {
+        std::abort();
+      }
       ASSERT_TRUE(test);
     }  // TRI_ASSERT(test);
   };

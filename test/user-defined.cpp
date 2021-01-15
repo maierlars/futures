@@ -3,7 +3,7 @@
 struct user_defined_tag {};
 
 template <>
-struct ::mellon::tag_trait<user_defined_tag> : ::mellon::tag_trait<default_test_tag> {
+struct mellon::tag_trait<user_defined_tag> : ::mellon::tag_trait<default_test_tag> {
   template <typename T, template <typename> typename Fut>
   struct user_defined_additions {
 

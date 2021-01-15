@@ -238,7 +238,7 @@ void abandon_promise(continuation_start<T>* base) noexcept {
                                            std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
     if (expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
-      delete base;  // we all agreed on not having this promise-future-chain
+      delete base;  // we all agreed on not having this promise-init_future-chain
     } else {
       return fulfill_continuation(base, detail::handler_helper<Tag, T>::abandon_promise());
     }
@@ -436,7 +436,7 @@ template <typename T, typename Tag>
 struct promise_type_based_extension {};
 
 /**
- * Producing end of future-chain. When the promise is `fulfilled` the chain
+ * Producing end of init_future-chain. When the promise is `fulfilled` the chain
  * of mellon is evaluated.
  * @tparam T
  */
@@ -531,10 +531,12 @@ namespace detail {
  */
 template <typename Tag, typename T, template <typename> typename Fut>
 struct future_base_base {
+  static_assert(!std::is_void_v<T>);
+
   using value_type = T;
 
   /**
-   * _Blocks_ the current thread until the future is fulfilled. This **not**
+   * _Blocks_ the current thread until the init_future is fulfilled. This **not**
    * something you should do unless you have a very good reason to do so. The
    * whole point of mellon is to make code non-blocking.
    *
@@ -625,7 +627,7 @@ struct future_type_based_extensions : detail::future_base_base<Tag, T, F> {};
  * into a single step to reduce memory and allocation overhead. Is derived from
  * future_base and thus provides all functions that mellon do.
  *
- * The temporary is implicitly convertible to `future<T>`.
+ * The temporary is implicitly convertible to `init_future<T>`.
  * @tparam T Initial value type.
  * @tparam F Temporary function type. Chain of functions that have been applied.
  * @tparam R Result type of the chain.
@@ -638,7 +640,7 @@ struct future_temporary
   static constexpr auto is_value_inlined = detail::small_box_tag<Tag, T>::stores_value;
 
   static_assert(!is_future_v<R>,
-                "future<future<T>> is a bad idea and thus not supported");
+                "init_future<init_future<T>> is a bad idea and thus not supported");
 
   future_temporary(future_temporary const&) = delete;
   future_temporary& operator=(future_temporary const&) = delete;
@@ -768,7 +770,7 @@ struct future_temporary
 // TODO when adding tags, allow user_provided_additions based on the tag and the type
 
 /**
- * Consuming end of a future-chain. You can add more elements to the chain using
+ * Consuming end of a init_future-chain. You can add more elements to the chain using
  * this interface.
  * @tparam T value_type
  */
@@ -777,14 +779,14 @@ struct future
     : detail::future_base<T, detail::future_proxy<Tag>::template instance, Tag>,
       private detail::small_box_tag<Tag, T> {
   /**
-   * Is true if the future can store an inline value.
+   * Is true if the init_future can store an inline value.
    */
   static constexpr auto is_value_inlined = detail::small_box_tag<Tag, T>::stores_value;
 
   static_assert(!std::is_void_v<T>,
                 "void is not supported, use std::monostate instead");
   static_assert(!is_future_v<T>,
-                "future<future<T>> is a bad idea and thus not supported");
+                "init_future<init_future<T>> is a bad idea and thus not supported");
   static_assert(std::is_nothrow_move_constructible_v<T>);
   static_assert(std::is_nothrow_destructible_v<T>);
 
@@ -821,7 +823,7 @@ struct future
       : future(std::move(o).template as<U>().finalize()) {}
 
   /**
-   * If the future was not used or moved away, the future is abandoned.
+   * If the init_future was not used or moved away, the init_future is abandoned.
    * For more, see `abandon`.
    */
   ~future() {
@@ -831,7 +833,7 @@ struct future
   }
 
   /**
-   * Constructs a fulfilled future in place. The arguments are passed to the
+   * Constructs a fulfilled init_future in place. The arguments are passed to the
    * constructor of `T`. If the value can be inlined it is constructed inline,
    * otherwise memory is allocated.
    *
@@ -852,28 +854,16 @@ struct future
     }
   }
 
-  template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
-  future(Args&&... args) noexcept(
-      std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
-    if constexpr (is_value_inlined) {
-      detail::small_box_tag<Tag, T>::emplace(std::forward<Args>(args)...);
-      _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(T));
-    } else {
-      _base.reset(new detail::continuation_base<T>(std::in_place,
-                                                   std::forward<Args>(args)...));
-    }
-  }
-
   /**
-   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
+   * (fmap) Enqueues a callback to the init_future chain and returns a new init_future that awaits
    * the return value of the provided callback. It is undefined in which thread
    * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
    *
-   * This function returns a temporary object which is implicitly convertible to future<R>.
+   * This function returns a temporary object which is implicitly convertible to init_future<R>.
    *
    * @tparam F
    * @param f
-   * @return A new future with `value_type` equal to the result type of `F`.
+   * @return A new init_future with `value_type` equal to the result type of `F`.
    */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
@@ -895,7 +885,7 @@ struct future
   }
 
   /**
-   * (fmap) Enqueues a callback to the future chain and returns a new future that awaits
+   * (fmap) Enqueues a callback to the init_future chain and returns a new init_future that awaits
    * the return value of the provided callback. It is undefined in which thread
    * the callback is executed. `F` must be nothrow invocable with `T&&` as parameter.
    *
@@ -903,7 +893,7 @@ struct future
    *
    * @tparam F callback type
    * @param f callback
-   * @return A new future with `value_type` equal to the result type of `F`.
+   * @return A new init_future with `value_type` equal to the result type of `F`.
    */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
@@ -921,7 +911,7 @@ struct future
   }
 
   /**
-   * Enqueues a final callback and ends the future chain.
+   * Enqueues a final callback and ends the init_future chain.
    *
    * @tparam F callback type
    * @param f callback
@@ -941,7 +931,7 @@ struct future
   }
 
   /**
-   * Returns true if the future holds a value locally.
+   * Returns true if the init_future holds a value locally.
    * @return true if a local value is present.
    */
   [[nodiscard]] bool holds_inline_value() const noexcept {
@@ -951,7 +941,7 @@ struct future
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
   /**
-   * Abandons a future chain. If the promise is abandoned as well, nothing happens.
+   * Abandons a init_future chain. If the promise is abandoned as well, nothing happens.
    * If, however, the promise is fulfilled it depends on the `abandoned_future_handler`
    * for that type what will happen next. In most cases this is just cleanup.
    *
@@ -1036,7 +1026,7 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
    * @tparam E
    * @tparam F
    * @param f
-   * @return A new future containing a value if the exception was caught.
+   * @return A new init_future containing a value if the exception was caught.
    */
   template <typename E, typename F, typename U = T,
       std::enable_if_t<std::is_invocable_r_v<U, F, E const&>, int> = 0>
@@ -1226,9 +1216,9 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
 };
 
 /**
- * Create a new pair of future and promise with value type `T`.
+ * Create a new pair of init_future and promise with value type `T`.
  * @tparam T value type
- * @return pair of future and promise.
+ * @return pair of init_future and promise.
  * @throws std::bad_alloc
  */
 template <typename T, typename Tag = default_tag>
@@ -1236,6 +1226,27 @@ auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
   auto start = new detail::continuation_start<T>();
   return std::make_pair(future<T, Tag>{start}, promise<T, Tag>{start});
 }
+
+template <typename>
+struct is_tuple : std::false_type {};
+template <typename... Ts>
+struct is_tuple<std::tuple<Ts...>> : std::true_type {};
+template <typename T>
+inline constexpr auto is_tuple_v = is_tuple<T>::value;
+
+template <typename F, typename T>
+struct apply_result;
+template <typename F, typename... Ts>
+struct apply_result<F, std::tuple<Ts...>> : std::invoke_result<F, Ts...> {};
+template <typename F, typename T>
+using apply_result_t = typename apply_result<F, T>::type;
+
+template <template <typename...> typename T, typename, typename>
+struct is_applicable;
+template <template <typename...> typename T, typename F, typename... Ts>
+struct is_applicable<T, F, std::tuple<Ts...>> : T<F, Ts...> {};
+template <template <typename...> typename T, typename F, typename Tup>
+inline constexpr auto is_applicable_v = is_applicable<T, F, Tup>::value;
 
 template <typename... Ts, template <typename> typename Fut, typename Tag>
 struct future_type_based_extensions<std::tuple<Ts...>, Fut, Tag>
@@ -1257,12 +1268,30 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut, Tag>
   }
 
   /**
-   * Transposes a future and a tuple. Returns a tuple of mellon awaiting the
+   * Transposes a init_future and a tuple. Returns a tuple of mellon awaiting the
    * individual members.
    * @return tuple of mellon
    */
   auto transpose() -> std::tuple<Fut<Ts>...> {
     return transpose(std::index_sequence_for<Ts...>{});
+  }
+
+  template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, Ts&&...>, int> = 0,
+      typename R = std::invoke_result_t<F, Ts&&...>>
+  auto and_then_apply(F&& f) -> Fut<R> {
+    return std::move(self()).and_then(
+        [f = std::forward<F>(f)](std::tuple<Ts...>&& tup) mutable noexcept {
+          return std::apply(f, std::move(tup));
+        });
+  }
+
+  template <typename F, std::enable_if_t<std::is_nothrow_invocable_r_v<void, F, Ts&&...>, int> = 0,
+      typename R = std::invoke_result_t<F, Ts&&...>>
+  void finally_apply(F&& f) {
+    std::move(self()).finally(
+        [f = std::forward<F>(f)](std::tuple<Ts...>&& tup) mutable noexcept {
+          std::apply(f, std::move(tup));
+        });
   }
 
   /**
@@ -1295,7 +1324,7 @@ struct future_type_based_extensions<std::tuple<Ts...>, Fut, Tag>
 
   using future_type = Fut<std::tuple<Ts...>>;
 
-  future_type& self() noexcept { return static_cast<future_type>(*this); }
+  future_type& self() noexcept { return static_cast<future_type&>(*this); }
 };
 
 }  // namespace mellon

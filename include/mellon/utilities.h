@@ -49,13 +49,18 @@ auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R, Tag> {
   // We have two allocations, one for the context and one for the promise.
   // Third, we use a shared pointer that has more overhead than necessary.
   (std::invoke([&] {
-     std::move(fs).finally([ctx](future_value_type_t<Fs>&& t) noexcept {
-       ctx->template fulfill<Is>(std::move(t));
-     });
-   }),
-   ...);
+    std::move(fs).finally([ctx](future_value_type_t<Fs>&& t) noexcept {
+      ctx->template fulfill<Is>(std::move(t));
+    });
+  }),
+      ...);
 
   return std::move(f);
+}
+
+template <typename Tag, typename... Fs, std::size_t... Is, typename R = std::tuple<future_value_type_t<Fs>...>>
+auto collect(std::index_sequence<Is...> is, std::tuple<Fs...>&& fs) -> future<R, Tag> {
+  return collect<Tag>(is, std::get<Is>(std::move(fs))...);
 }
 
 }  // namespace detail
@@ -69,10 +74,16 @@ auto collect(std::index_sequence<Is...>, Fs&&... fs) -> future<R, Tag> {
  * @param fs Futures that are collected.
  * @return A new my_future that returns a tuple.
  */
-template <typename... Fs, typename Tag,  typename R = std::tuple<Fs...>>
+template <typename... Fs, typename Tag, typename R = std::tuple<Fs...>>
 auto collect(future<Fs, Tag>&&... fs) -> future<R, Tag> {
   // TODO maybe we want to extend this function to allow to accept temporary objects
   return detail::collect<Tag>(std::index_sequence_for<Fs...>{}, std::move(fs)...);
+}
+
+template <typename... Fs, typename Tag, typename R = std::tuple<Fs...>>
+auto collect(std::tuple<future<Fs, Tag>...>&& tfs) -> future<R, Tag> {
+  // TODO maybe we want to extend this function to allow to accept temporary objects
+  return detail::collect<Tag>(std::index_sequence_for<Fs...>{}, std::move(tfs));
 }
 
 /**
@@ -121,7 +132,6 @@ auto collect(InputIt begin, InputIt end) -> future<R, Tag> {
   }
   return std::move(f);
 }
-
 }  // namespace mellon
 
 #endif  // FUTURES_UTILITIES_H
