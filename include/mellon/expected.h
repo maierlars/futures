@@ -10,14 +10,14 @@ template <typename T>
 struct expected;
 
 /**
- * Invokes `f` with `args...` and caputers the return value in an expected. If
+ * Invokes `f` with `args...` and captures the return value in an expected. If
  * and exception is thrown is it also captured.
- * @tparam F
- * @tparam Args
- * @tparam R
- * @param f
- * @param args
- * @return
+ * @tparam F Callable
+ * @tparam Args Argument types
+ * @tparam R Return value type (deduced)
+ * @param f Callable
+ * @param args Argument values
+ * @return `expected<R>` containing `f(args...)` or a exception.
  */
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int> = 0,
           typename R = std::invoke_result_t<F, Args...>>
@@ -27,40 +27,58 @@ namespace detail {
 
 template <typename T>
 struct expected_base {
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, expected<T>&>, int> = 0>
-  auto map(F&& f) & noexcept -> expected<std::invoke_result_t<F, expected<T>&>> {
-    return captured_invoke(std::forward<F>(f), self());
-  }
-
-  template <typename F, std::enable_if_t<std::is_invocable_v<F, expected<T> const&>, int> = 0>
-  auto map(F&& f) const& noexcept
-      -> expected<std::invoke_result_t<F, expected<T> const&>> {
-    return captured_invoke(std::forward<F>(f), self());
-  }
-
+  /**
+   * Calls `f` with `std::move(*this)` as parameter and captures its return
+   * value. If `f` throws an exception it is captured as well.
+   * @tparam F Callable
+   * @param f Function to be invoked.
+   * @return Return value of `f`
+   */
   template <typename F, std::enable_if_t<std::is_invocable_v<F, expected<T>&&>, int> = 0>
   auto map(F&& f) && noexcept -> expected<std::invoke_result_t<F, expected<T>&&>> {
     return captured_invoke(std::forward<F>(f), std::move(self()));
   }
 
-  template<typename E>
-  [[nodiscard]] bool has_exception() const {
+  /**
+   * Tests whether this holds an exception of type `E`. This method is slow
+   * because it has to rethrow the exception to inspect its type.
+   * @tparam E
+   * @return
+   */
+  template <typename E>
+  [[nodiscard]] bool has_exception() const noexcept {
     try {
       rethrow_error();
-    } catch(E const&) {
+    } catch (E const&) {
       return true;
+    } catch (...) {
+      return false;
     }
     return false;
   }
 
+  /**
+   * Rethrows an error as exception.
+   */
   void rethrow_error() const {
     if (self().has_error()) {
       std::rethrow_exception(self().error());
     }
   }
 
+  /**
+   * Invokes `f` with `E const&` if `this` contains an exception of type `E`.
+   * Otherwise does nothing. Returns an optional containing the result of the
+   * invocation or an empty `optional` if no error was present.
+   *
+   * @tparam E Exception type
+   * @tparam F Callable
+   * @param f Function object
+   * @return `std::optional` containing the optional return value of `f`.
+   */
   template <typename E, typename F, std::enable_if_t<std::is_invocable_v<F, E const&>, int> = 0>
-  auto catch_error(F&& f) -> std::optional<std::invoke_result_t<F, E const&>> {
+  auto catch_error(F&& f) noexcept(std::is_nothrow_invocable_v<F, E const&>)
+      -> std::optional<std::invoke_result_t<F, E const&>> {
     try {
       self().rethrow_error();
     } catch (E const& e) {
@@ -76,7 +94,7 @@ struct expected_base {
              if (self().has_error()) {
                try {
                  std::rethrow_exception(self().error());
-               } catch (std::decay_t<E> const& e) {
+               } catch (E const& e) {
                  if constexpr (std::is_void_v<T>) {
                    std::invoke(std::forward<F>(f), e);
                    return {};
@@ -90,8 +108,15 @@ struct expected_base {
         .flatten();
   }
 
+  /**
+   * Rethrows any exception with `E` constructed using `args...`.
+   * @tparam E
+   * @tparam Args
+   * @param args
+   * @return
+   */
   template <typename E, typename... Args>
-  auto rethrow_nested(Args&&... args) -> expected<T> {
+  auto rethrow_nested(Args&&... args) && noexcept -> expected<T> {
     try {
       try {
         self().rethrow_error();
@@ -105,8 +130,17 @@ struct expected_base {
     return std::move(self());
   }
 
+  /**
+   * Rethrows an exception of type `W` with `E` constructed using `args...`.
+   * `E` is constructed only if an exception of type `W` was present.
+   * @tparam W
+   * @tparam E
+   * @tparam Args
+   * @param args
+   * @return
+   */
   template <typename W, typename E, typename... Args>
-  auto rethrow_nested(Args&&... args) -> expected<T> {
+  auto rethrow_nested(Args&&... args) && noexcept -> expected<T> {
     try {
       try {
         self().rethrow_error();
@@ -120,7 +154,11 @@ struct expected_base {
     return std::move(self());
   }
 
-  explicit operator bool() const noexcept { return self().has_error(); }
+  /**
+   * Converts to true, if it contains an value. False otherwise.
+   * @return `has_value()`
+   */
+  explicit operator bool() const noexcept { return self().has_value(); }
 
   using value_type = T;
 
@@ -154,9 +192,10 @@ struct expected : detail::expected_base<T> {
   expected() noexcept(std::is_nothrow_default_constructible_v<T>)
       : expected(std::in_place) {}
 
-  /* implicit */ expected(std::exception_ptr p)
+  /* implicit */ expected(std::exception_ptr p) noexcept
       : _exception(std::move(p)), _has_value(false) {}
-  /* implicit */ expected(T t) : _value(std::move(t)), _has_value(true) {}
+  /* implicit */ expected(T t) noexcept(std::is_nothrow_move_constructible_v<T>)
+      : _value(std::move(t)), _has_value(true) {}
 
   template <typename... Ts, std::enable_if_t<std::is_constructible_v<T, Ts...>, int> = 0>
   explicit expected(std::in_place_t,
@@ -221,7 +260,8 @@ struct expected : detail::expected_base<T> {
    * @return a valid value
    */
   template <typename... Args>
-  T unwrap_or(Args&&... args) && noexcept(std::is_nothrow_constructible_v<T, Args...>) {
+  T unwrap_or(Args&&... args) && noexcept(
+      std::is_nothrow_constructible_v<T, Args...>&& std::is_nothrow_move_constructible_v<T>) {
     static_assert(std::is_constructible_v<T, Args...>);
     if (has_value()) {
       return std::move(_value);
@@ -234,7 +274,7 @@ struct expected : detail::expected_base<T> {
    * Returns the exception pointer.
    * @return returns the exception or null if no exception is present.
    */
-  [[nodiscard]] std::exception_ptr error() const {
+  [[nodiscard]] std::exception_ptr error() const noexcept {
     if (has_error()) {
       return _exception;
     }
@@ -270,7 +310,8 @@ struct expected : detail::expected_base<T> {
    * @return
    */
   template <typename U = T, std::enable_if_t<is_expected_v<U>, int> = 0, typename R = typename U::value_type>
-  auto flatten() && -> expected<R> {
+  auto flatten() && noexcept(std::is_nothrow_move_constructible_v<R>) -> expected<R> {
+    static_assert(std::is_move_constructible_v<U>);
     if (has_error()) {
       return std::move(_exception);
     }
@@ -278,13 +319,17 @@ struct expected : detail::expected_base<T> {
     return std::move(_value);
   }
 
+  /**
+   * Converts `T` to `U`. If an exception is thrown, it is stored in the return
+   * value.
+   * @tparam U target type
+   * @return
+   */
   template <typename U>
   auto as() -> expected<U> {
-    if (has_value()) {
-      return U(std::move(_value));
-    }
-
-    return _exception;
+    static_assert(std::is_convertible_v<T, U>,
+                  "can not convert from `T` to `U`");
+    return std::move(*this).map_value([](T&& t) -> U { return U(std::move(t)); });
   }
 
  private:
@@ -311,7 +356,8 @@ struct expected<void> : detail::expected_base<void> {
   [[nodiscard]] bool has_error() const noexcept {
     return _exception != nullptr;
   }
-  [[nodiscard]] std::exception_ptr error() const {
+  [[nodiscard]] auto error() const noexcept -> std::exception_ptr {
+    static_assert(std::is_nothrow_copy_constructible_v<std::exception_ptr>);
     if (has_error()) {
       return _exception;
     }
