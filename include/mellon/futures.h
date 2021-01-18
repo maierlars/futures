@@ -296,7 +296,7 @@ auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
                               std::invoke(std::forward<G>(f), base->cast_move())};
     base->destroy();
     delete base;
-    return std::move(fut);
+    return fut;
   }
 
   auto step = detail::allocate_frame_noexcept<Tag, continuation_step<T, F, R>>(
@@ -312,7 +312,7 @@ auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
       base->destroy();
       delete base;
       delete step;
-      return std::move(fut);
+      return fut;
     } else {
       step->emplace(std::invoke(step->function_self(), base->cast_move()));
       base->destroy();
@@ -522,6 +522,15 @@ template <typename T, template <typename> typename F, typename Tag>
 struct future_type_based_extensions;
 namespace detail {
 
+
+template<typename Tag, typename T, template <typename> typename F, typename Ts, typename = void>
+struct has_constructor : std::false_type {};
+template<typename Tag, typename T, template <typename> typename F, typename... Ts>
+struct has_constructor<Tag, T, F, std::tuple<Ts...>, std::void_t<decltype(future_type_based_extensions<T, F, Tag>::construct(std::declval<Ts>()...))>> : std::true_type {};
+template<typename Tag, typename T, template <typename> typename F, typename... Ts>
+inline constexpr auto has_constructor_v = has_constructor<Tag, T, F, std::tuple<Ts...>>::value;
+
+
 /**
  * Base class unifies all common operations on mellon and future_temporaries.
  * Futures and Temporaries are dervived from this class and only specialise
@@ -599,7 +608,7 @@ struct future_base_base {
 
   void fulfill(promise<T, Tag>&& p) && noexcept {
     std::move(self()).finally([p = std::move(p)](T && t) mutable noexcept {
-      p.fulfill(std::move(t));
+      std::move(p).fulfill(std::move(t));
     });
   }
 
@@ -767,7 +776,6 @@ struct future_temporary
   detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
 };
 
-// TODO when adding tags, allow user_provided_additions based on the tag and the type
 
 /**
  * Consuming end of a init_future-chain. You can add more elements to the chain using
@@ -853,6 +861,15 @@ struct future
                                                    std::forward<Args>(args)...));
     }
   }
+
+  explicit future(T t) : future(std::in_place, std::move(t)) {}
+
+  template <typename... Ts, typename U = T,
+      std::enable_if_t<std::is_constructible_v<U, Ts...>, int> = 0,
+            std::enable_if_t<detail::has_constructor_v<Tag, T, detail::future_proxy<Tag>::template instance, Ts...>, int> = 0>
+  explicit future(Ts&&... ts)
+      : future(future_type_based_extensions<T, detail::future_proxy<Tag>::template instance, Tag>::construct(
+            std::forward<Ts>(ts)...)) {}
 
   /**
    * (fmap) Enqueues a callback to the init_future chain and returns a new init_future that awaits
@@ -1156,6 +1173,7 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
         });
   }
 
+
  private:
   using future_type = Fut<expect::expected<T>>;
 
@@ -1163,7 +1181,15 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
   future_type const& self() const noexcept {
     return *static_cast<future_type const*>(this);
   }
+
+ public:
+  template<typename... Ts, std::enable_if_t<std::is_constructible_v<T, Ts...>, int> = 0>
+  static auto construct(std::in_place_t, Ts&&... ts) -> future_type {
+    return future_type{std::in_place, std::in_place, std::forward<Ts>(ts)...};
+  }
 };
+
+static_assert(detail::has_constructor_v<default_tag, expect::expected<int>, detail::future_proxy<default_tag>::template instance, std::in_place_t, int>);
 
 template <typename T, typename Tag>
 struct promise_type_based_extension<expect::expected<T>, Tag> {

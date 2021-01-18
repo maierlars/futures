@@ -4,7 +4,7 @@ project(futures)
 set(CMAKE_CXX_STANDARD 17)
 
 
-add_library(mellon src/futures.cpp include/mellon/utilities.h include/mellon/completion-queue.h include/mellon/traits.h)
+add_library(mellon src/futures.cpp include/mellon/utilities.h include/mellon/completion-queue.h include/mellon/traits.h include/mellon/state-machine.h)
 target_include_directories(mellon PUBLIC include)
 
 
