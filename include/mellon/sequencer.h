@@ -8,28 +8,34 @@ namespace mellon {
 template <typename T>
 inline constexpr auto always_false_v = false;
 
-template <typename Tag, typename... Ts>
-struct multi_resources : std::tuple<future<Ts, Tag>...> {
-  explicit multi_resources(std::tuple<future<Ts, Tag>...> t)
-      : std::tuple<future<Ts, Tag>...>(std::move(t)) {}
+template <typename... Ts>
+struct first_future_tag;
+template <typename T, typename Tag, typename... Ts>
+struct first_future_tag<future<T, Tag>, Ts...> {
+  using type = Tag;
 };
-template <typename T>
-struct is_multi_resources : std::false_type {};
-template <typename Tag, typename... Ts>
-struct is_multi_resources<multi_resources<Tag, Ts...>> : std::true_type {};
-template <typename T>
-inline constexpr auto is_multi_resources_v = is_multi_resources<T>::value;
+template <typename T, typename... Ts>
+struct first_future_tag<T, Ts...> {
+  using type = first_future_tag<Ts...>;
+};
 
-template <typename Tag, typename... Ts>
+template <typename... Ts>
 auto mr(Ts&&... ts) {
-  return multi_resources(std::make_tuple([&] {
+  constexpr bool has_futures = (mellon::is_future_like_v<Ts> || ...);
+  static_assert(has_futures, "to use mr you need at least one future");
+
+  using Tag = typename first_future_tag<Ts...>::type;
+
+  return mellon::collect([&] {
     using T = std::decay_t<Ts>;
     if constexpr (is_future_v<T>) {
+      static_assert(std::is_same_v<Tag, typename mellon::future_trait<T>::tag_type>,
+                    "all futures must have the same tag");
       return std::forward<Ts>(ts);
     } else {
       return future<T, Tag>{std::in_place, std::forward<Ts>(ts)};
     }
-  }()...));
+  }()...);
 }
 
 template <std::size_t, typename F>

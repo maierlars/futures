@@ -195,6 +195,36 @@ TEST_F(SequencerTests, capture_then_tuple_test) {
     reached_last.signal();
   });
 
+  std::move(p3).fulfill(24);
+  std::move(p1).fulfill(13);
+  std::move(p2).fulfill(37);
+}
+
+TEST_F(SequencerTests, capture_then_multi_res) {
+  auto [f1, p1] = make_promise<int>();
+  auto [f2, p2] = make_promise<int>();
+  auto [f3, p3] = make_promise<int>();
+
+  auto f =
+      mellon::sequence(std::move(f1))
+          .append_capture([&, f2 = std::move(f2), f3 = std::move(f3)](int x) mutable {
+            if (x == 12) {
+              return mellon::mr(std::move(f2), std::move(f3), 56);
+            }
+            throw std::runtime_error("some test error");
+          })
+          .then_do([&](int x, int y, int z) {
+            EXPECT_EQ(x, 37);
+            EXPECT_EQ(y, 24);
+            EXPECT_EQ(z, 56);
+            return future<int>{std::in_place, 78};
+          })
+          .compose();
+
+  std::move(f).finally([this](expect::expected<int>&& x) noexcept {
+    EXPECT_TRUE(x.has_exception<std::runtime_error>());
+    reached_last.signal();
+  });
 
   std::move(p3).fulfill(24);
   std::move(p1).fulfill(13);
