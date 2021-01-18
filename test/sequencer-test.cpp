@@ -45,16 +45,17 @@ TEST(SequencerTests, simple_test) {
 TEST(SequencerTests, capture_test) {
   auto [f1, p1] = make_promise<int>();
   auto [f2, p2] = make_promise<int>();
+  auto [f3, p3] = make_promise<int>();
 
   auto f =
       mellon::sequence(std::move(f1))
-          .append_capture([&, f2 = std::move(f2)](int x) mutable {
+          .append_capture([&, f2 = std::move(f2), f3 = std::move(f3)](int x) mutable {
             if (x == 12) {
-              return std::move(f2);
+              return mellon::collect(std::move(f2), std::move(f3));
             }
             throw std::runtime_error("some test error");
           })
-          .then_do([&](int x) {
+          .then_do([&](int x, int y) {
             ADD_FAILURE() << "This should never be executed";
             return future<int>{std::in_place, 78};
           })

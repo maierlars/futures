@@ -142,7 +142,8 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
             typename ReturnValue = std::invoke_result_t<G, OutputType&&>,
             std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
   auto append_capture(G&& g) && /* TODO exception specifier */ {
-    return move_self().append([g = std::forward<G>(g)](OutputType&& t) mutable noexcept {
+    return move_self().append([g = std::forward<G>(g)](OutputType&& t) mutable noexcept
+                              -> future<expect::expected<ValueType>, FutureTag> {
       // expected<future<T>>
       auto result = expect::captured_invoke(g, std::move(t));
       if (result.has_value()) {
@@ -151,17 +152,16 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
           return std::move(result.unwrap());
         } else {
           // the result has to become a expected
-          return std::move(result.unwrap()).template as<expect::expected<ValueType>>();
+          return std::move(result).unwrap().template as<expect::expected<ValueType>>();
         }
       } else {
         if constexpr (expect::is_expected_v<ValueType>) {
-          return future<expect::expected<typename ValueType::value_type>, FutureTag>{std::in_place,
-                                                                result.error()};
+          return future<expect::expected<typename ValueType::value_type>, FutureTag>{
+              std::in_place, result.error()};
         } else {
           return future<expect::expected<ValueType>, FutureTag>{std::in_place,
                                                                 result.error()};
         }
-
       }
     });
   }
@@ -171,10 +171,22 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
             std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type,
             std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
   auto then_do(G&& g) && {
-    return move_self().append_capture([g = std::forward<G>(g)](OutputType&& v) mutable
-                          -> future<ValueType, FutureTag> {
-      return std::invoke(g, std::move(v).unwrap());
-    });
+    return move_self().append_capture(
+        [g = std::forward<G>(g)](OutputType&& v) mutable -> future<ValueType, FutureTag> {
+          return std::invoke(g, std::move(v).unwrap());
+        });
+  }
+
+  template <typename G, typename U = OutputType, std::enable_if_t<expect::is_expected_v<U>, int> = 0,
+            typename V = typename U::value_type, std::enable_if_t<is_tuple_v<V>, int> = 0,
+            typename ReturnValue = apply_result_t<G, V>,
+            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type,
+            std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
+  auto then_do(G&& g) && {
+    return move_self().append_capture(
+        [g = std::forward<G>(g)](OutputType&& v) mutable -> future<ValueType, FutureTag> {
+          return std::apply(g, std::move(v).unwrap());
+        });
   }
 
  private:
@@ -197,9 +209,7 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
     return index_function_tag<I, F>::ref();
   }
 
-  auto&& move_self() {
-    return std::move(*this);
-  }
+  auto&& move_self() { return std::move(*this); }
 };
 
 template <typename T, typename Tag>
