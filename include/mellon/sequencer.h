@@ -110,24 +110,6 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
         std::in_place, std::move(nth_function<Is>())..., std::forward<G>(g));
   }
 
-  /*template <typename G, std::enable_if_t<is_applicable_v<std::is_invocable, G, OutputType>, int> = 0,
-            typename R = apply_result_t<G, OutputType>>
-  auto then_do(G&& g) {
-    if constexpr (is_future_v<R>) {
-      return append([g = std::forward<G>(g)](OutputType params) mutable noexcept {
-        return std::apply(g, std::move(params));
-      });
-    } else if constexpr (is_multi_resources_v<R>) {
-      return append([g = std::forward<G>(g)](OutputType params) mutable noexcept {
-        return collect(std::apply(g, params));
-      });
-    } else {
-      return append([g = std::forward<G>(g)](OutputType params) mutable noexcept {
-        return future<R, FutureTag>{std::in_place, std::apply(g, params)};
-      });
-    }
-  }*/
-
   auto compose() && -> mellon::future<OutputType, FutureTag> {
     /* TODO exception specifier -- do we need a nothrow alloc? */
     auto&& [f, p] = mellon::make_promise<OutputType, FutureTag>();
@@ -142,34 +124,37 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
             typename ReturnValue = std::invoke_result_t<G, OutputType&&>,
             std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
   auto append_capture(G&& g) && /* TODO exception specifier */ {
-    return move_self().append([g = std::forward<G>(g)](OutputType&& t) mutable noexcept
-                              -> future<expect::expected<ValueType>, FutureTag> {
-      // expected<future<T>>
+    return move_self().append([g = std::forward<G>(g)](OutputType&& t) mutable noexcept {
       auto result = expect::captured_invoke(g, std::move(t));
-      if (result.has_value()) {
-        // if T == expected<U>
-        if constexpr (expect::is_expected_v<ValueType>) {
-          return std::move(result.unwrap());
+      if constexpr (expect::is_expected_v<ValueType>) {
+        // decltype(result) = expected<future<expected<T>>>
+        if (result.has_value()) {
+          return std::move(result).unwrap();  // future<expected<T>>
         } else {
-          // the result has to become a expected
-          return std::move(result).unwrap().template as<expect::expected<ValueType>>();
+          // future<expected<T>>
+          return future<ValueType, FutureTag>{std::in_place, result.error()};
         }
       } else {
-        if constexpr (expect::is_expected_v<ValueType>) {
-          return future<expect::expected<typename ValueType::value_type>, FutureTag>{
-              std::in_place, result.error()};
-        } else {
-          return future<expect::expected<ValueType>, FutureTag>{std::in_place,
-                                                                result.error()};
-        }
+        // decltype(result) = expected<future<T>>
+        //  -> transform to future<expected<T>>
+        // the result has to become a expected
+        return future_transform(std::move(result));
       }
+    });
+  }
+
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, OutputType&&>, int> = 0,
+            typename ReturnValue = std::invoke_result_t<G, OutputType&&>,
+            std::enable_if_t<is_future_temporary_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
+  auto append_capture(G&& g) && /* TODO exception specifier */ {
+    return move_self().append_capture([g = std::forward<G>(g)](OutputType&& t) mutable {
+      return std::invoke(g, std::move(t)).finalize();
     });
   }
 
   template <typename G, typename U = OutputType, std::enable_if_t<expect::is_expected_v<U>, int> = 0,
             typename V = typename U::value_type, typename ReturnValue = std::invoke_result_t<G, V&&>,
-            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type,
-            std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
+            std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type>
   auto then_do(G&& g) && {
     return move_self().append_capture(
         [g = std::forward<G>(g)](OutputType&& v) mutable -> future<ValueType, FutureTag> {
@@ -177,9 +162,9 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
         });
   }
 
-  template <typename G, typename U = OutputType, std::enable_if_t<expect::is_expected_v<U>, int> = 0,
-            typename V = typename U::value_type, std::enable_if_t<is_tuple_v<V>, int> = 0,
-            typename ReturnValue = apply_result_t<G, V>,
+  template <typename G, typename U = OutputType,
+            std::enable_if_t<expect::is_expected_v<U>, int> = 0, typename V = typename U::value_type,
+            std::enable_if_t<is_tuple_v<V>, int> = 0, typename ReturnValue = apply_result_t<G, V>,
             std::enable_if_t<is_future_v<ReturnValue>, int> = 0, typename ValueType = typename ReturnValue::value_type,
             std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
   auto then_do(G&& g) && {
@@ -190,6 +175,16 @@ struct sequence_builder_impl<FutureTag, InputType, OutputType, std::index_sequen
   }
 
  private:
+  template <typename T, typename TTag>
+  static auto future_transform(expect::expected<future<T, TTag>> e) noexcept
+      -> future<expect::expected<T>, TTag> {
+    if (e.has_error()) {
+      return future<expect::expected<T>, TTag>{std::in_place, e.error()};
+    } else {
+      return std::move(e).unwrap().template as<expect::expected<T>>();
+    }
+  }
+
   template <typename S, typename TT>
   friend auto sequence(future<S, TT> f);
   template <typename...>

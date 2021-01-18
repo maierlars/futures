@@ -162,6 +162,20 @@ template <typename T, typename Tag>
 struct is_future<future<T, Tag>> : std::true_type {};
 template <typename T>
 inline constexpr auto is_future_v = is_future<T>::value;
+template <typename T>
+struct is_future_temporary : std::false_type {};
+template <typename T, typename F, typename R, typename Tag>
+struct is_future_temporary<future_temporary<T, F, R, Tag>> : std::true_type {};
+template <typename T>
+inline constexpr auto is_future_temporary_v = is_future_temporary<T>::value;
+template <typename T>
+struct is_future_like : std::false_type {};
+template <typename T, typename Tag>
+struct is_future_like<future<T, Tag>> : std::true_type {};
+template <typename T, typename F, typename R, typename Tag>
+struct is_future_like<future_temporary<T, F, R, Tag>> : std::true_type {};
+template <typename T>
+inline constexpr auto is_future_like_v = is_future_like<T>::value;
 
 namespace detail {
 
