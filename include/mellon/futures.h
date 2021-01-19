@@ -177,6 +177,15 @@ struct is_future_like<future_temporary<T, F, R, Tag>> : std::true_type {};
 template <typename T>
 inline constexpr auto is_future_like_v = is_future_like<T>::value;
 
+/**
+ * Create a new pair of init_future and promise with value type `T`.
+ * @tparam T value type
+ * @return pair of init_future and promise.
+ * @throws std::bad_alloc
+ */
+template <typename T, typename Tag = default_tag>
+auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>>;
+
 namespace detail {
 
 template <typename Tag, typename T>
@@ -492,7 +501,7 @@ struct promise : promise_type_based_extension<T, Tag>,
 
   template <typename Tuple, typename tuple_type = std::remove_reference_t<Tuple>>
   void fulfill_from_tuple(Tuple&& t) && noexcept(
-      detail::unpack_tuple_into_v<std::is_nothrow_constructible, tuple_type, T>){
+      detail::unpack_tuple_into_v<std::is_nothrow_constructible, tuple_type, T>) {
     return std::move(*this).fulfill_from_tuple_impl(
         std::forward<Tuple>(t), std::make_index_sequence<std::tuple_size_v<tuple_type>>{});
   }
@@ -621,7 +630,51 @@ struct future_prototype {
     }
   }
 
-  template<typename Tag>
+  template <typename G, std::enable_if_t<std::is_nothrow_invocable_v<G, T&&>, int> = 0,
+            typename ReturnValue = std::invoke_result_t<G, T&&>,
+            std::enable_if_t<is_future_like_v<ReturnValue>, int> = 0>
+  auto bind(G&& g) {
+    using Tag = typename future_trait<ReturnValue>::tag_type;
+    using ValueType = typename future_trait<ReturnValue>::value_type;
+    auto&& [f, p] = make_promise<ValueType, Tag>();
+
+    move_self().finally([p = std::move(p), g = std::forward<G>(g)](T&& result) mutable noexcept {
+      std::invoke(g, std::move(result)).finally([p = std::move(p)](ValueType&& v) mutable noexcept {
+        std::move(p).fulfill(std::move(v));
+      });
+    });
+
+    return std::move(f);
+  }
+
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
+            typename ReturnValue = std::invoke_result_t<G, T&&>,
+            std::enable_if_t<is_future_like_v<ReturnValue>, int> = 0>
+  auto bind_capture(G&& g) {
+    using Tag = typename future_trait<ReturnValue>::tag_type;
+    using ValueType = typename future_trait<ReturnValue>::value_type;
+    auto&& [f, p] = make_promise<expect::expected<ValueType>, Tag>();
+    move_self().finally([p = std::move(p), g = std::forward<G>(g)](T&& result) mutable noexcept {
+      expect::expected<ReturnValue> expected_future =
+          expect::captured_invoke(g, std::move(result));
+      if (expected_future.has_error()) {
+        std::move(p).fulfill(expected_future.error());
+      } else {
+        std::move(expected_future).unwrap().finally([p = std::move(p)](ValueType&& v) mutable noexcept {
+          std::move(p).fulfill(std::in_place, std::move(v));
+        });
+      }
+    });
+
+    return std::move(f);
+  }
+
+  /**
+   * Fulfills the promise using the value produced by the future.
+   * @tparam Tag (deduced)
+   * @param p promise
+   */
+  template <typename Tag>
   void fulfill(promise<T, Tag>&& p) && noexcept {
     move_self().finally([p = std::move(p)](T&& t) mutable noexcept {
       std::move(p).fulfill(std::move(t));
@@ -762,7 +815,6 @@ struct future_temporary
     return detail::insert_continuation_step<Tag, T, F, R>(
         _base.release(), std::move(detail::function_store<F>::function_self()));
   }
-
 
   [[nodiscard]] bool holds_inline_value() const noexcept {
     return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
@@ -1049,6 +1101,52 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return std::move(self()).and_capture(std::forward<F>(f));
   }*/
 
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
+      typename ReturnType = std::invoke_result_t<G, T&&>,
+      std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
+      typename ValueType = typename future_trait<ReturnType>::value_type,
+      std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
+  auto then_bind(G&& g) && noexcept -> future<expect::expected<ValueType>, Tag> {
+    auto&& [f, p] = make_promise<expect::expected<ValueType>, Tag>();
+    move_self().finally([g = std::forward<G>(g), p = std::move(p)](expect::expected<T>&& t) mutable noexcept {
+      if (t.has_error()) {
+        return std::move(p).fulfill(t.error());
+      }
+      expect::expected<ReturnType> result = expect::captured_invoke(g, std::move(t).unwrap());
+      if (result.has_value()) {
+        std::move(result).unwrap().finally([p = std::move(p)](ValueType&& v) mutable noexcept {
+          std::move(p).fulfill(std::move(v));
+        });
+      } else {
+        std::move(p).fulfill(result.error());
+      }
+    });
+    return std::move(f);
+  }
+
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
+      typename ReturnType = std::invoke_result_t<G, T&&>,
+      std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
+      typename ValueType = typename future_trait<ReturnType>::value_type,
+      std::enable_if_t<expect::is_expected_v<ValueType>, int> = 0>
+  auto then_bind(G&& g) && noexcept -> future<ValueType, Tag> {
+    auto&& [f, p] = make_promise<ValueType, Tag>();
+    move_self().finally([g = std::forward<G>(g), p = std::move(p)](expect::expected<T>&& t) mutable noexcept {
+      if (t.has_error()) {
+        std::move(p).fulfill(t.error());
+      }
+      expect::expected<ReturnType> result = expect::captured_invoke(g, std::move(t).unwrap());
+      if (result.has_value()) {
+        std::move(result).unwrap().finally([p = std::move(p)](ValueType&& v) mutable noexcept {
+          std::move(p).fulfill(std::move(v));
+        });
+      } else {
+        std::move(p).fulfill(result.error());
+      }
+    });
+    return std::move(f);
+  }
+
   /**
    * Catches an exception of type `E` and calls `f` with `E const&`. If the
    * values does not contain an exception `f` will _never_ be called. The return
@@ -1195,6 +1293,8 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return *static_cast<future_type const*>(this);
   }
 
+  future_type&& move_self() noexcept { return std::move(self()); }
+
  public:
   template <typename... Ts, std::enable_if_t<std::is_constructible_v<T, Ts...>, int> = 0>
   static auto construct(std::in_place_t, Ts&&... ts) -> future_type {
@@ -1261,7 +1361,7 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
  * @return pair of init_future and promise.
  * @throws std::bad_alloc
  */
-template <typename T, typename Tag = default_tag>
+template <typename T, typename Tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
   auto start = new detail::continuation_start<T>();
   return std::make_pair(future<T, Tag>{start}, promise<T, Tag>{start});

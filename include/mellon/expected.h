@@ -9,6 +9,13 @@ namespace expect {
 template <typename T>
 struct expected;
 
+template <typename T>
+struct is_expected : std::false_type {};
+template <typename T>
+struct is_expected<expected<T>> : std::true_type {};
+template <typename T>
+inline constexpr auto is_expected_v = is_expected<T>::value;
+
 /**
  * Invokes `f` with `args...` and captures the return value in an expected. If
  * and exception is thrown is it also captured.
@@ -20,8 +27,12 @@ struct expected;
  * @return `expected<R>` containing `f(args...)` or a exception.
  */
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int> = 0,
-          typename R = std::invoke_result_t<F, Args...>>
+          typename R = std::invoke_result_t<F, Args...>, std::enable_if_t<!is_expected_v<R>, int> = 0>
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R>;
+
+template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int> = 0,
+          typename R = std::invoke_result_t<F, Args...>, std::enable_if_t<is_expected_v<R>, int> = 0>
+auto captured_invoke(F&& f, Args&&... args) noexcept -> R;
 
 namespace detail {
 
@@ -91,21 +102,20 @@ struct expected_base {
   template <typename E, typename F, std::enable_if_t<std::is_invocable_r_v<T, F, E const&>, int> = 0>
   auto map_error(F&& f) && noexcept -> expected<T> {
     return captured_invoke([&]() -> expected<T> {
-             if (self().has_error()) {
-               try {
-                 std::rethrow_exception(self().error());
-               } catch (E const& e) {
-                 if constexpr (std::is_void_v<T>) {
-                   std::invoke(std::forward<F>(f), e);
-                   return {};
-                 } else {
-                   return std::invoke(std::forward<F>(f), e);
-                 }
-               }
-             }
-             return std::move(self());
-           })
-        .flatten();
+      if (self().has_error()) {
+        try {
+          std::rethrow_exception(self().error());
+        } catch (E const& e) {
+          if constexpr (std::is_void_v<T>) {
+            std::invoke(std::forward<F>(f), e);
+            return {};
+          } else {
+            return std::invoke(std::forward<F>(f), e);
+          }
+        }
+      }
+      return std::move(self());
+    });
   }
 
   /**
@@ -172,13 +182,6 @@ struct expected_base {
 };
 
 }  // namespace detail
-
-template <typename T>
-struct is_expected : std::false_type {};
-template <typename T>
-struct is_expected<expected<T>> : std::true_type {};
-template <typename T>
-inline constexpr auto is_expected_v = is_expected<T>::value;
 
 /**
  * Either contains a value of type T or an exception.
@@ -377,7 +380,8 @@ struct expected<void> : detail::expected_base<void> {
   std::exception_ptr _exception = nullptr;
 };
 
-template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>, typename R>
+template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
+          typename R, std::enable_if_t<!is_expected_v<R>, int>>
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
   try {
     if constexpr (std::is_void_v<R>) {
@@ -386,6 +390,16 @@ auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
     } else {
       return std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
     }
+  } catch (...) {
+    return std::current_exception();
+  }
+}
+
+template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
+          typename R, std::enable_if_t<is_expected_v<R>, int>>
+auto captured_invoke(F&& f, Args&&... args) noexcept -> R {
+  try {
+    return std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
   } catch (...) {
     return std::current_exception();
   }
