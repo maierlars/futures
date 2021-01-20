@@ -382,6 +382,7 @@ struct expected<void> : detail::expected_base<void> {
 
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
           typename R, std::enable_if_t<!is_expected_v<R>, int>>
+
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
   try {
     if constexpr (std::is_void_v<R>) {
@@ -397,6 +398,7 @@ auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
 
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
           typename R, std::enable_if_t<is_expected_v<R>, int>>
+
 auto captured_invoke(F&& f, Args&&... args) noexcept -> R {
   try {
     return std::invoke(std::forward<F>(f), std::forward<Args>(args)...);

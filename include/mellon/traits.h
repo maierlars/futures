@@ -78,6 +78,11 @@ struct tag_trait_helper {
   template <typename tag>
   struct has_assertion_handler<tag, std::void_t<typename tag_trait<tag>::assertion_handler>>
       : std::true_type {};
+  template <typename tag, typename = void>
+  struct has_debug_assertion_handler : std::false_type {};
+  template <typename tag>
+  struct has_debug_assertion_handler<tag, std::void_t<typename tag_trait<tag>::debug_assertion_handler>>
+      : std::true_type {};
 
   template <typename tag, typename T, typename = void>
   struct has_promise_aborted_handler : std::false_type {};
@@ -117,6 +122,14 @@ struct tag_trait_helper {
     } else {
       static_assert(!std::is_same_v<default_tag, Tag>);
       tag_trait_helper<default_tag>::assert_true(condition);
+    }
+  }
+
+  static void debug_assert_true(bool condition) noexcept {
+    if constexpr (has_debug_assertion_handler<Tag>::value) {
+      using assertion_handler = typename tag_trait<Tag>::debug_assertion_handler;
+      static_assert(std::is_nothrow_invocable_r_v<void, assertion_handler, bool>);
+      assertion_handler{}(condition);
     }
   }
 
