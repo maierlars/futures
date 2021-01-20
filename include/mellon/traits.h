@@ -113,6 +113,12 @@ struct tag_trait_helper {
   struct has_is_disable_temporaries<tag, std::void_t<decltype(tag_trait<tag>::disable_temporaries)>>
       : std::true_type {};
 
+  template <typename tag, typename = void>
+  struct has_allocator : std::false_type {};
+  template <typename tag>
+  struct has_allocator<tag, std::void_t<typename tag_trait<tag>::allocator>>
+      : std::true_type {};
+
   template <typename tag, typename T, typename = void>
   struct has_is_type_inlined : std::false_type {};
   template <typename tag, typename T>
@@ -196,6 +202,31 @@ struct tag_trait_helper {
       return tag_trait<Tag>::disable_temporaries;
     }
     return false;
+  }
+
+  template<typename T>
+  static T* allocate() {
+    if constexpr (has_allocator<Tag>::value) {
+      using allocator = typename tag_trait<Tag>::allocator;
+      return allocator::template allocate<T>();
+    } else {
+      static_assert(has_allocator<default_tag>::value);
+      return tag_trait_helper<default_tag>::allocate<T>();
+    }
+  }
+  template<typename T>
+  static T* allocate(std::nothrow_t) {
+    if constexpr (has_allocator<Tag>::value) {
+      using allocator = typename tag_trait<Tag>::allocator;
+      return allocator::template allocate<T>(std::nothrow);
+    } else {
+      return tag_trait_helper<default_tag>::allocate<T>(std::nothrow);
+    }
+  }
+
+  template<typename T, typename... Args>
+  static T* allocate_construct(Args&&... args) {
+    return new (allocate<T>()) T(std::forward<Args>(args)...);
   }
 };
 }  // namespace detail

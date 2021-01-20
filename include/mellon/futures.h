@@ -8,8 +8,7 @@
 #include <mutex>
 #include <type_traits>
 #include <utility>
-
-#include <iostream>  // TODO
+#include <new>
 
 #include "expected.h"
 #include "traits.h"
@@ -116,6 +115,19 @@ struct default_tag {};
 
 template <>
 struct tag_trait<default_tag> {
+
+  struct allocator {
+    // TODO is this how you do such things?
+    template<typename T>
+    static T* allocate() {
+      return reinterpret_cast<T*>(::operator new(sizeof(T)));
+    }
+    template<typename T>
+    static T* allocate(std::nothrow_t) noexcept {
+      return reinterpret_cast<T*>(::operator new(sizeof(T), std::nothrow));
+    }
+  };
+
   struct assertion_handler {
     void operator()(bool test) const noexcept {
       if (!test) {
@@ -205,7 +217,7 @@ struct handler_helper {
 
 template <typename T>
 struct continuation;
-template <typename Tag, typename T>
+template <typename Tag, typename T, std::size_t = tag_trait_helper<Tag>::finally_prealloc_size()>
 struct continuation_base;
 template <typename Tag, typename T>
 struct continuation_start;
@@ -279,7 +291,8 @@ template <typename Tag, typename T, typename... Args>
 auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {
   static_assert(std::is_nothrow_constructible_v<T, Args...>,
                 "type should be nothrow constructable");
-  auto frame = new (std::nothrow) T(std::forward<Args>(args)...);
+  auto frame = detail::tag_trait_helper<Tag>::template allocate<T>(std::nothrow);
+  new (frame) T(std::forward<Args>(args)...);
   detail::tag_trait_helper<Tag>::assert_true(frame != nullptr);
   return frame;
 }
@@ -397,8 +410,8 @@ struct memory_buffer<0> {
   }
 };
 
-template <typename Tag, typename T>
-struct continuation_base : memory_buffer<tag_trait_helper<Tag>::finally_prealloc_size()>,
+template <typename Tag, typename T, std::size_t prealloc_size>
+struct continuation_base : memory_buffer<prealloc_size>,
                            box<T> {
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit continuation_base(std::in_place_t, Args&&... args) noexcept(
@@ -453,7 +466,6 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   continuation<T>* cont;
   auto* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
   if (mem != nullptr) {
-    std::cout << "placed the final locally" << std::endl;
     new (mem) continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
     cont = mem;
   } else {
@@ -986,8 +998,10 @@ struct future
       detail::internal_store<Tag, T>::emplace(std::forward<Args>(args)...);
       _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T));
     } else {
-      _base.reset(new detail::continuation_base<Tag, T>(std::in_place,
-                                                   std::forward<Args>(args)...));
+      // no preallocated memory needed
+      _base.reset(
+          detail::tag_trait_helper<Tag>::template allocate_construct<detail::continuation_base<Tag, T, 0>>(
+              std::in_place, std::forward<Args>(args)...));
     }
   }
 
@@ -1165,8 +1179,8 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return std::move(self()).and_capture(std::forward<F>(f));
   }*/
 
-  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
-            typename ReturnType = std::invoke_result_t<G, T&&>,
+  template <typename G, typename U = T, std::enable_if_t<std::is_invocable_v<G, U&&>, int> = 0,
+            typename ReturnType = std::invoke_result_t<G, U&&>,
             std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
             typename ValueType = typename future_trait<ReturnType>::value_type,
             std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
@@ -1190,8 +1204,8 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return std::move(f);
   }
 
-  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
-            typename ReturnType = std::invoke_result_t<G, T&&>,
+  template <typename G, typename U = T, std::enable_if_t<std::is_invocable_v<G, U&&>, int> = 0,
+            typename ReturnType = std::invoke_result_t<G, U&&>,
             std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
             typename ValueType = typename future_trait<ReturnType>::value_type,
             std::enable_if_t<expect::is_expected_v<ValueType>, int> = 0>
@@ -1431,7 +1445,8 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
  */
 template <typename T, typename Tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
-  auto start = new detail::continuation_start<Tag, T>();
+  auto start =
+      detail::tag_trait_helper<Tag>::template allocate_construct<detail::continuation_start<Tag, T>>();
   return std::make_pair(future<T, Tag>{start}, promise<T, Tag>{start});
 }
 
