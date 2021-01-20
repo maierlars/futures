@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <utility>
 
+#include <iostream>  // TODO
+
 #include "expected.h"
 #include "traits.h"
 
@@ -31,8 +33,8 @@ extern invalid_pointer_type invalid_pointer_future_abandoned;
 extern invalid_pointer_type invalid_pointer_promise_abandoned;
 extern invalid_pointer_type invalid_pointer_promise_fulfilled;
 
-#define FUTURES_INVALID_POINTER_INLINE_VALUE(T) \
-  reinterpret_cast<::mellon::detail::continuation_base<T>*>(&detail::invalid_pointer_inline_value)
+#define FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T) \
+  reinterpret_cast<::mellon::detail::continuation_base<Tag, T>*>(&detail::invalid_pointer_inline_value)
 #define FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T) \
   reinterpret_cast<::mellon::detail::continuation<T>*>(&detail::invalid_pointer_future_abandoned)
 #define FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T) \
@@ -150,6 +152,7 @@ struct tag_trait<default_tag> {
   };
 
   static constexpr auto small_value_size = 64;
+  static constexpr auto finally_prealloc_size = 32;
 };
 
 template <typename T, typename Tag>
@@ -202,19 +205,19 @@ struct handler_helper {
 
 template <typename T>
 struct continuation;
-template <typename T>
+template <typename Tag, typename T>
 struct continuation_base;
-template <typename T>
+template <typename Tag, typename T>
 struct continuation_start;
 template <typename Tag, typename T, typename F, typename R>
 struct continuation_step;
-template <typename T, typename F>
+template <typename T, typename F, typename>
 struct continuation_final;
 
-template <typename Tag, typename T, typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
-void fulfill_continuation(continuation_base<T>* base,
+template <typename Tag, typename T, typename... Args,
+          std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
+void fulfill_continuation(continuation_base<Tag, T>* base,
                           Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
-
   detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
   base->emplace(std::forward<Args>(args)...);  // this can throw an exception
 
@@ -238,8 +241,7 @@ void fulfill_continuation(continuation_base<T>* base,
 }
 
 template <typename Tag, typename T>
-void abandon_continuation(continuation_base<T>* base) noexcept {
-
+void abandon_continuation(continuation_base<Tag, T>* base) noexcept {
   detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T),
@@ -259,7 +261,7 @@ void abandon_continuation(continuation_base<T>* base) noexcept {
 }
 
 template <typename Tag, typename T>
-void abandon_promise(continuation_start<T>* base) noexcept {
+void abandon_promise(continuation_start<Tag, T>* base) noexcept {
   detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T),
@@ -282,39 +284,8 @@ auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {
   return frame;
 }
 
-template <typename Tag, typename T, typename F>
-void insert_continuation_final(continuation_base<T>* base, F&& f) noexcept {
-  static_assert(std::is_nothrow_invocable_r_v<void, F, T&&>);
-  static_assert(std::is_nothrow_destructible_v<T>);
-
-  detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
-
-  if (base->_next.load(std::memory_order_acquire) ==
-      FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
-    // short path
-    std::invoke(std::forward<F>(f), base->cast_move());
-    base->destroy();
-    delete base;
-    return;
-  }
-
-  auto step =
-      detail::allocate_frame_noexcept<Tag, continuation_final<T, F>>(std::in_place,
-                                                                     std::forward<F>(f));
-  continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
-                                           std::memory_order_acquire)) {  // ask mpoeter
-    detail::tag_trait_helper<Tag>::assert_true(
-        expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T));
-    std::invoke(step->function_self(), base->cast_move());
-    base->destroy();
-    delete base;
-    delete step;
-  }
-}
-
 template <typename Tag, typename T, typename F, typename R, typename G>
-auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
+auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
     -> future<R, Tag> {
   static_assert(std::is_nothrow_invocable_r_v<R, F, T&&>);
   static_assert(std::is_nothrow_destructible_v<T>);
@@ -356,14 +327,79 @@ auto insert_continuation_step(continuation_base<T>* base, G&& f) noexcept
   return future<R, Tag>{step};
 }
 
+template <typename F, typename Func = std::decay_t<F>, typename = std::enable_if_t<std::is_class_v<Func>>>
+struct function_store : Func {
+  template <typename G = F>
+  explicit function_store(std::in_place_t,
+                          G&& f) noexcept(std::is_nothrow_constructible_v<Func, G>)
+      : Func(std::forward<G>(f)) {}
+
+  [[nodiscard]] Func& function_self() { return *this; }
+  [[nodiscard]] Func const& function_self() const { return *this; }
+};
+
 template <typename T>
 struct continuation {
   virtual ~continuation() = default;
   virtual void operator()(T&&) noexcept = 0;
 };
 
-template <typename T>
-struct continuation_base : box<T> {
+template <typename T, typename F, typename Deleter>
+struct continuation_final final : continuation<T>, function_store<F> {
+  static_assert(std::is_nothrow_invocable_r_v<void, F, T>);
+  template <typename G = F>
+  explicit continuation_final(std::in_place_t, G&& f) noexcept(
+      std::is_nothrow_constructible_v<function_store<F>, std::in_place_t, G>)
+      : function_store<F>(std::in_place, std::forward<G>(f)) {}
+  void operator()(T&& t) noexcept override {
+    std::invoke(function_store<F>::function_self(), std::move(t));
+    Deleter{}(this);
+  }
+};
+
+struct deleter_dealloc {
+  template <typename T>
+  void operator()(T* ptr) {
+    delete ptr;
+  }
+};
+
+struct deleter_destroy {
+  template <typename T>
+  void operator()(T* ptr) {
+    ptr->~T();
+  }
+};
+
+template <std::size_t Size>
+struct memory_buffer {
+  template <typename T>
+  T* try_allocate() noexcept {
+    void* data = store;
+    std::size_t size = Size;
+    void* base = std::align(alignof(T), sizeof(T), data, size);
+    if (base == nullptr) {
+      return nullptr;
+    }
+    return reinterpret_cast<T*>(base);
+  }
+
+  memory_buffer() : store() {}
+
+  std::byte store[Size];
+};
+
+template <>
+struct memory_buffer<0> {
+  template <typename T, typename... Args>
+  T* try_allocate(Args&&...) noexcept {
+    return nullptr;
+  }
+};
+
+template <typename Tag, typename T>
+struct continuation_base : memory_buffer<tag_trait_helper<Tag>::finally_prealloc_size()>,
+                           box<T> {
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit continuation_base(std::in_place_t, Args&&... args) noexcept(
       std::is_nothrow_constructible_v<box<T>, std::in_place_t, Args...>)
@@ -380,22 +416,11 @@ struct continuation_base : box<T> {
   std::atomic<continuation<T>*> _next = nullptr;
 };
 
-template <typename T>
-struct continuation_start final : continuation_base<T> {};
-
-template <typename F, typename Func = std::decay_t<F>, typename = std::enable_if_t<std::is_class_v<Func>>>
-struct function_store : Func {
-  template <typename G = F>
-  explicit function_store(std::in_place_t,
-                          G&& f) noexcept(std::is_nothrow_constructible_v<Func, G>)
-      : Func(std::forward<G>(f)) {}
-
-  [[nodiscard]] Func& function_self() { return *this; }
-  [[nodiscard]] Func const& function_self() const { return *this; }
-};
+template <typename Tag, typename T>
+struct continuation_start final : continuation_base<Tag, T> {};
 
 template <typename Tag, typename T, typename F, typename R>
-struct continuation_step final : continuation_base<R>, function_store<F>, continuation<T> {
+struct continuation_step final : continuation_base<Tag, R>, function_store<F>, continuation<T> {
   static_assert(std::is_nothrow_invocable_r_v<R, F, T&&>);
 
   template <typename G = F>
@@ -405,22 +430,49 @@ struct continuation_step final : continuation_base<R>, function_store<F>, contin
 
   void operator()(T&& t) noexcept override {
     detail::fulfill_continuation<Tag>(this, std::invoke(function_store<F>::function_self(),
-                                                   std::move(t)));
+                                                        std::move(t)));
   }
 };
 
-template <typename T, typename F>
-struct continuation_final final : continuation<T>, function_store<F> {
-  static_assert(std::is_nothrow_invocable_r_v<void, F, T>);
-  template <typename G = F>
-  explicit continuation_final(std::in_place_t, G&& f) noexcept(
-      std::is_nothrow_constructible_v<function_store<F>, std::in_place_t, G>)
-      : function_store<F>(std::in_place, std::forward<G>(f)) {}
-  void operator()(T&& t) noexcept override {
-    std::invoke(function_store<F>::function_self(), std::move(t));
-    delete this;
+template <typename Tag, typename T, typename F>
+void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept {
+  static_assert(std::is_nothrow_invocable_r_v<void, F, T&&>);
+  static_assert(std::is_nothrow_destructible_v<T>);
+  detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
+
+  if (base->_next.load(std::memory_order_acquire) ==
+      FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
+    // short path
+    std::invoke(std::forward<F>(f), base->cast_move());
+    base->destroy();
+    delete base;
+    return;
   }
-};
+
+  // try to emplace the final into the steps local memory
+  continuation<T>* cont;
+  auto* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
+  if (mem != nullptr) {
+    std::cout << "placed the final locally" << std::endl;
+    new (mem) continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
+    cont = mem;
+  } else {
+    cont = detail::allocate_frame_noexcept<Tag, continuation_final<T, F, deleter_dealloc>>(
+        std::in_place, std::forward<F>(f));
+  }
+
+  detail::tag_trait_helper<Tag>::assert_true(cont != nullptr);
+  continuation<T>* expected = nullptr;
+  if (!base->_next.compare_exchange_strong(expected, cont, std::memory_order_release,
+                                           std::memory_order_acquire)) {  // ask mpoeter
+    detail::tag_trait_helper<Tag>::assert_true(
+        expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T));
+    cont->operator()(base->cast_move());  // TODO we can get rid of this virtual call
+    base->destroy();
+    delete base;
+    delete cont;
+  }
+}
 
 template <typename F, unsigned>
 struct composer_tag : function_store<F> {
@@ -528,8 +580,8 @@ struct promise : promise_type_based_extension<T, Tag>,
 
   template <typename S, typename STag>
   friend auto make_promise() -> std::pair<future<S, STag>, promise<S, STag>>;
-  explicit promise(detail::continuation_start<T>* base) : _base(base) {}
-  detail::unique_but_not_deleting_pointer<detail::continuation_start<T>> _base = nullptr;
+  explicit promise(detail::continuation_start<Tag, T>* base) : _base(base) {}
+  detail::unique_but_not_deleting_pointer<detail::continuation_start<Tag, T>> _base = nullptr;
 };
 
 template <typename T, typename F, typename R, typename Tag>
@@ -827,7 +879,7 @@ struct future_temporary
   }
 
   [[nodiscard]] bool holds_inline_value() const noexcept {
-    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
+    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
   }
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
@@ -837,20 +889,20 @@ struct future_temporary
     _base.reset();
   }
   template <typename G = F>
-  future_temporary(G&& f, detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> base)
+  future_temporary(G&& f, detail::unique_but_not_deleting_pointer<detail::continuation_base<Tag, T>> base)
       : detail::function_store<F>(std::in_place, std::forward<G>(f)),
         _base(std::move(base)) {}
   template <typename G = F, typename S = T>
   future_temporary(std::in_place_t, G&& f, S&& s)
       : detail::function_store<F>(std::in_place, std::forward<G>(f)),
         detail::internal_store<Tag, T>(std::in_place, std::forward<S>(s)),
-        _base(FUTURES_INVALID_POINTER_INLINE_VALUE(T)) {}
+        _base(FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T)) {}
 
   template <typename, typename>
   friend struct future;
   template <typename, typename, typename, typename>
   friend struct future_temporary;
-  detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
+  detail::unique_but_not_deleting_pointer<detail::continuation_base<Tag, T>> _base;
 };
 
 /**
@@ -932,9 +984,9 @@ struct future
       std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
     if constexpr (is_value_inlined) {
       detail::internal_store<Tag, T>::emplace(std::forward<Args>(args)...);
-      _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(T));
+      _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T));
     } else {
-      _base.reset(new detail::continuation_base<T>(std::in_place,
+      _base.reset(new detail::continuation_base<Tag, T>(std::in_place,
                                                    std::forward<Args>(args)...));
     }
   }
@@ -1028,7 +1080,7 @@ struct future
    * @return true if a local value is present.
    */
   [[nodiscard]] bool holds_inline_value() const noexcept {
-    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(T);
+    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
   }
   // TODO move _base pointer to future_prototype.
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
@@ -1052,7 +1104,7 @@ struct future
     detail::abandon_continuation<Tag>(_base.release());
   }
 
-  explicit future(detail::continuation_base<T>* ptr) noexcept : _base(ptr) {}
+  explicit future(detail::continuation_base<Tag, T>* ptr) noexcept : _base(ptr) {}
 
  private:
   template <typename, typename>
@@ -1063,7 +1115,7 @@ struct future
     _base.reset();
   }
   // TODO move _base pointer to future_base.
-  detail::unique_but_not_deleting_pointer<detail::continuation_base<T>> _base;
+  detail::unique_but_not_deleting_pointer<detail::continuation_base<Tag, T>> _base;
 };
 
 template <typename T, template <typename> typename Fut, typename Tag>
@@ -1113,18 +1165,20 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return std::move(self()).and_capture(std::forward<F>(f));
   }*/
 
-  template <typename G, typename U = T, std::enable_if_t<std::is_invocable_v<G, U&&>, int> = 0,
-      typename ReturnType = std::invoke_result_t<G, U&&>,
-      std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
-      typename ValueType = typename future_trait<ReturnType>::value_type,
-      std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
+            typename ReturnType = std::invoke_result_t<G, T&&>,
+            std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
+            typename ValueType = typename future_trait<ReturnType>::value_type,
+            std::enable_if_t<!expect::is_expected_v<ValueType>, int> = 0>
   auto then_bind(G&& g) && noexcept -> future<expect::expected<ValueType>, Tag> {
     auto&& [f, p] = make_promise<expect::expected<ValueType>, Tag>();
-    move_self().finally([g = std::forward<G>(g), p = std::move(p)](expect::expected<U>&& t) mutable noexcept {
+    move_self().finally([g = std::forward<G>(g),
+                         p = std::move(p)](expect::expected<T>&& t) mutable noexcept {
       if (t.has_error()) {
         return std::move(p).fulfill(t.error());
       }
-      expect::expected<ReturnType> result = expect::captured_invoke(g, std::move(t).unwrap());
+      expect::expected<ReturnType> result =
+          expect::captured_invoke(g, std::move(t).unwrap());
       if (result.has_value()) {
         std::move(result).unwrap().finally([p = std::move(p)](ValueType&& v) mutable noexcept {
           std::move(p).fulfill(std::move(v));
@@ -1136,18 +1190,20 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
     return std::move(f);
   }
 
-  template <typename G, typename U = T,  std::enable_if_t<std::is_invocable_v<G, U&&>, int> = 0,
-      typename ReturnType = std::invoke_result_t<G, U&&>,
-      std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
-      typename ValueType = typename future_trait<ReturnType>::value_type,
-      std::enable_if_t<expect::is_expected_v<ValueType>, int> = 0>
+  template <typename G, std::enable_if_t<std::is_invocable_v<G, T&&>, int> = 0,
+            typename ReturnType = std::invoke_result_t<G, T&&>,
+            std::enable_if_t<is_future_like_v<ReturnType>, int> = 0,
+            typename ValueType = typename future_trait<ReturnType>::value_type,
+            std::enable_if_t<expect::is_expected_v<ValueType>, int> = 0>
   auto then_bind(G&& g) && noexcept -> future<ValueType, Tag> {
     auto&& [f, p] = make_promise<ValueType, Tag>();
-    move_self().finally([g = std::forward<G>(g), p = std::move(p)](expect::expected<U>&& t) mutable noexcept {
+    move_self().finally([g = std::forward<G>(g),
+                         p = std::move(p)](expect::expected<T>&& t) mutable noexcept {
       if (t.has_error()) {
         std::move(p).fulfill(t.error());
       }
-      expect::expected<ReturnType> result = expect::captured_invoke(g, std::move(t).unwrap());
+      expect::expected<ReturnType> result =
+          expect::captured_invoke(g, std::move(t).unwrap());
       if (result.has_value()) {
         std::move(result).unwrap().finally([p = std::move(p)](ValueType&& v) mutable noexcept {
           std::move(p).fulfill(std::move(v));
@@ -1375,7 +1431,7 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
  */
 template <typename T, typename Tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
-  auto start = new detail::continuation_start<T>();
+  auto start = new detail::continuation_start<Tag, T>();
   return std::make_pair(future<T, Tag>{start}, promise<T, Tag>{start});
 }
 

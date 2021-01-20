@@ -101,6 +101,11 @@ struct tag_trait_helper {
   template <typename tag>
   struct has_small_value_size<tag, std::void_t<decltype(tag_trait<tag>::small_value_size)>>
       : std::true_type {};
+  template <typename tag, typename = void>
+  struct has_finally_prealloc_size : std::false_type {};
+  template <typename tag>
+  struct has_finally_prealloc_size<tag, std::void_t<decltype(tag_trait<tag>::finally_prealloc_size)>>
+      : std::true_type {};
 
   template <typename tag, typename = void>
   struct has_is_disable_temporaries : std::false_type {};
@@ -165,6 +170,15 @@ struct tag_trait_helper {
     } else {
       static_assert(!std::is_same_v<default_tag, Tag>);
       return tag_trait_helper<default_tag>::small_value_size();
+    }
+  }
+
+  static constexpr std::size_t finally_prealloc_size() {
+    if constexpr (has_finally_prealloc_size<Tag>::value) {
+      return tag_trait<Tag>::finally_prealloc_size;
+    } else {
+      static_assert(!std::is_same_v<default_tag, Tag>);
+      return tag_trait_helper<default_tag>::finally_prealloc_size();
     }
   }
 
