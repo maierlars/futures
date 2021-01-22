@@ -553,7 +553,12 @@ struct promise : promise_type_based_extension<T, Tag>,
   promise(promise const&) = delete;
   promise& operator=(promise const&) = delete;
   promise(promise&& o) noexcept = default;
-  promise& operator=(promise&& o) noexcept = default;
+  promise& operator=(promise&& o) noexcept {
+      if (_base) {
+        std::move(*this).abandon();
+      }
+      std::swap(_base, o._base);
+  }
 
   /**
    * In place constructs the result using the given parameters.
@@ -582,6 +587,10 @@ struct promise : promise_type_based_extension<T, Tag>,
 
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
+  void swap(promise<T, Tag>& o) {
+    std::swap(_base, o._base);
+  }
+
  private:
   template <typename Tuple, std::size_t... Is, typename tuple_type = std::remove_reference_t<Tuple>>
   void fulfill_from_tuple_impl(Tuple&& t, std::index_sequence<Is...>) && noexcept(
@@ -595,6 +604,11 @@ struct promise : promise_type_based_extension<T, Tag>,
   explicit promise(detail::continuation_start<Tag, T>* base) : _base(base) {}
   detail::unique_but_not_deleting_pointer<detail::continuation_start<Tag, T>> _base = nullptr;
 };
+
+template<typename T, typename Tag>
+void swap(promise<T, Tag>& a, promise<T, Tag>&b) {
+  a.swap(b);
+}
 
 template <typename T, typename F, typename R, typename Tag>
 struct future_temporary;
