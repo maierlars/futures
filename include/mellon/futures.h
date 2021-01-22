@@ -992,7 +992,8 @@ struct future
 
   future(future const&) = delete;
   future& operator=(future const&) = delete;
-  future(future&& o) noexcept : _base(nullptr) {
+  future(future&& o) noexcept(!is_value_inlined || std::is_nothrow_move_constructible_v<T>)
+      : _base(nullptr) {
     if constexpr (is_value_inlined) {
       if (o.holds_inline_value()) {
         detail::internal_store<Tag, T>::emplace(o.cast_move());
@@ -1001,7 +1002,8 @@ struct future
     }
     std::swap(_base, o._base);
   }
-  future& operator=(future&& o) noexcept = delete; /* {
+  future& operator=(future&& o) noexcept(!is_value_inlined ||
+                                         std::is_nothrow_move_constructible_v<T>) {
     if (_base) {
       std::move(*this).abandon();
     }
@@ -1014,7 +1016,7 @@ struct future
     }
     std::swap(_base, o._base);
     return *this;
-  }*/
+  }
 
   template <typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
   future(future<U, Tag>&& o) noexcept : future(std::move(o).template as<T>()) {}
@@ -1188,6 +1190,28 @@ struct future
     }
 
     detail::abandon_continuation<Tag>(_base.release());
+  }
+
+  void swap(future<T, Tag>& o) noexcept(!is_value_inlined ||
+                                        (std::is_nothrow_swappable_v<T> &&
+                                         std::is_nothrow_move_constructible_v<T>)) {
+    if constexpr (is_value_inlined) {
+      if (holds_inline_value() && o.holds_inline_value()) {
+        using std::swap;
+        swap(this->ref(), o.ref());
+      } else if (holds_inline_value()) {
+        o.emplace(this->cast_move());
+        this->destroy();
+      } else if (o.holds_inline_value()) {
+        this->emplace(o.cast_move());
+        o.destroy();
+      }
+    }
+    std::swap(_base, o._base);
+  }
+
+  friend void swap(future<T, Tag>& a, future<T, Tag>& b) noexcept(noexcept(a.swap(b))) {
+    a.swap(b);
   }
 
   explicit future(detail::continuation_base<Tag, T>* ptr) noexcept : _base(ptr) {}
