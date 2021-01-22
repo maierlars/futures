@@ -6,11 +6,11 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <type_traits>
 #include <utility>
-#include <new>
 
-#include <cmath> // TODO
+#include <cmath>  // TODO
 
 #include "expected.h"
 #include "traits.h"
@@ -117,14 +117,13 @@ struct default_tag {};
 
 template <>
 struct tag_trait<default_tag> {
-
   struct allocator {
     // TODO is this how you do such things?
-    template<typename T>
+    template <typename T>
     static T* allocate() {
       return reinterpret_cast<T*>(::operator new(sizeof(T)));
     }
-    template<typename T>
+    template <typename T>
     static T* allocate(std::nothrow_t) noexcept {
       return reinterpret_cast<T*>(::operator new(sizeof(T), std::nothrow));
     }
@@ -353,8 +352,7 @@ struct function_store : Func {
                           G&& f) noexcept(std::is_nothrow_constructible_v<Func, G>)
       : Func(std::forward<G>(f)) {}
 
-  [[nodiscard]] Func& function_self() { return *this; }
-  [[nodiscard]] Func const& function_self() const { return *this; }
+  [[nodiscard]] F function_self() { return std::forward<F>(*this); }
 };
 
 template <typename T>
@@ -390,9 +388,9 @@ struct deleter_destroy {
   }
 };
 
-template<std::size_t size, std::size_t max, std::size_t align>
+template <std::size_t size, std::size_t max, std::size_t align>
 struct size_tester {
-//  static_assert(size <= max);
+  //  static_assert(size <= max);
   static_assert(align == 8);
 };
 
@@ -401,7 +399,7 @@ struct memory_buffer {
   template <typename T>
   T* try_allocate() noexcept {
     size_tester<sizeof(T), Size, alignof(T)> test;
-    (void) test;
+    (void)test;
     void* data = store;
     std::size_t size = Size;
     void* base = std::align(alignof(T), sizeof(T), data, size);
@@ -425,8 +423,7 @@ struct memory_buffer<0> {
 };
 
 template <typename Tag, typename T, std::size_t prealloc_size>
-struct continuation_base : memory_buffer<prealloc_size>,
-                           box<T> {
+struct continuation_base : memory_buffer<prealloc_size>, box<T> {
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit continuation_base(std::in_place_t, Args&&... args) noexcept(
       std::is_nothrow_constructible_v<box<T>, std::in_place_t, Args...>)
@@ -447,7 +444,9 @@ template <typename Tag, typename T>
 struct continuation_start final : continuation_base<Tag, T> {};
 
 template <typename Tag, typename T, typename F, typename R>
-struct continuation_step final : continuation_base<Tag, R>, function_store<F>, continuation<T> {
+struct continuation_step final : continuation_base<Tag, R>,
+                                 function_store<F>,
+                                 continuation<T> {
   static_assert(std::is_nothrow_invocable_r_v<R, F, T&&>);
 
   template <typename G = F>
@@ -464,6 +463,7 @@ struct continuation_step final : continuation_base<Tag, R>, function_store<F>, c
 template <typename Tag, typename T, typename F>
 void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept {
   static_assert(std::is_nothrow_invocable_r_v<void, F, T&&>);
+  static_assert(std::is_nothrow_constructible_v<F, F>);
   static_assert(std::is_nothrow_destructible_v<T>);
   detail::tag_trait_helper<Tag>::debug_assert_true(base != nullptr);
 
@@ -479,18 +479,19 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
 #ifdef FUTURES_COUNT_ALLOC
   std::size_t lambda_size = sizeof(continuation_final<T, F, deleter_destroy>);
   double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
-  std::size_t bucket = static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
+  std::size_t bucket =
+      static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
 
   ::mellon::detail::number_of_final_usage.fetch_add(1, std::memory_order_relaxed);
-  ::mellon::detail::histogram_final_lambda_sizes[bucket]
-      .fetch_add(1, std::memory_order_relaxed);
+  ::mellon::detail::histogram_final_lambda_sizes[bucket].fetch_add(1, std::memory_order_relaxed);
 #endif
 
   // try to emplace the final into the steps local memory
   continuation<T>* cont;
   auto* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
   if (mem != nullptr) {
-    new (mem) continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
+    new (mem)
+        continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
     cont = mem;
 #ifdef FUTURES_COUNT_ALLOC
     ::mellon::detail::number_of_prealloc_usage.fetch_add(1, std::memory_order_relaxed);
@@ -581,10 +582,10 @@ struct promise : promise_type_based_extension<T, Tag>,
   promise& operator=(promise const&) = delete;
   promise(promise&& o) noexcept = default;
   promise& operator=(promise&& o) noexcept {
-      if (_base) {
-        std::move(*this).abandon();
-      }
-      std::swap(_base, o._base);
+    if (_base) {
+      std::move(*this).abandon();
+    }
+    std::swap(_base, o._base);
   }
 
   /**
@@ -614,9 +615,7 @@ struct promise : promise_type_based_extension<T, Tag>,
 
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
-  void swap(promise<T, Tag>& o) {
-    std::swap(_base, o._base);
-  }
+  void swap(promise<T, Tag>& o) { std::swap(_base, o._base); }
 
  private:
   template <typename Tuple, std::size_t... Is, typename tuple_type = std::remove_reference_t<Tuple>>
@@ -632,8 +631,8 @@ struct promise : promise_type_based_extension<T, Tag>,
   detail::unique_but_not_deleting_pointer<detail::continuation_start<Tag, T>> _base = nullptr;
 };
 
-template<typename T, typename Tag>
-void swap(promise<T, Tag>& a, promise<T, Tag>&b) {
+template <typename T, typename Tag>
+void swap(promise<T, Tag>& a, promise<T, Tag>& b) {
   a.swap(b);
 }
 
@@ -892,6 +891,10 @@ struct future_temporary
 
   template <typename G, std::enable_if_t<std::is_nothrow_invocable_r_v<void, G, R&&>, int> = 0>
   void finally(G&& f) && noexcept {
+    static_assert(
+        std::is_nothrow_constructible_v<G, G>,
+        "the lambda object must be nothrow constructible from itself. If it's "
+        "passed as lvalue reference it has to be nothrow copyable.");
 #ifdef FUTURES_COUNT_ALLOC
     ::mellon::detail::number_of_temporary_objects.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -942,7 +945,8 @@ struct future_temporary
   }
 
   [[nodiscard]] bool holds_inline_value() const noexcept {
-    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
+    return is_value_inlined &&
+           _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
   }
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
 
@@ -952,7 +956,8 @@ struct future_temporary
     _base.reset();
   }
   template <typename G = F>
-  future_temporary(G&& f, detail::unique_but_not_deleting_pointer<detail::continuation_base<Tag, T>> base)
+  future_temporary(G&& f,
+                   detail::unique_but_not_deleting_pointer<detail::continuation_base<Tag, T>> base)
       : detail::function_store<F>(std::in_place, std::forward<G>(f)),
         _base(std::move(base)) {}
   template <typename G = F, typename S = T>
@@ -1050,7 +1055,8 @@ struct future
 #ifdef FUTURES_COUNT_ALLOC
     std::size_t lambda_size = sizeof(T);
     double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
-    std::size_t bucket = static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
+    std::size_t bucket =
+        static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
     ::mellon::detail::histogram_value_sizes[bucket].fetch_add(1, std::memory_order_relaxed);
 #endif
     if constexpr (is_value_inlined) {
@@ -1144,6 +1150,12 @@ struct future
    */
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_r_v<void, F, T&&>, int> = 0>
   void finally(F&& f) && noexcept {
+    static_assert(std::is_nothrow_constructible_v<F, F>,
+                  "the lambda object must be nothrow constructible from "
+                  "itself. You should pass it as rvalue reference and it "
+                  "should be nothrow move constructible. If it's passed as "
+                  "lvalue reference it has to be nothrow copyable.");
+
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
 #ifdef FUTURES_COUNT_ALLOC
@@ -1159,16 +1171,15 @@ struct future
                                                         std::forward<F>(f));
   }
 
-  auto&& finalize() {
-    return std::move(*this);
-  }
+  auto&& finalize() { return std::move(*this); }
 
   /**
    * Returns true if the init_future holds a value locally.
    * @return true if a local value is present.
    */
   [[nodiscard]] bool holds_inline_value() const noexcept {
-    return is_value_inlined && _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
+    return is_value_inlined &&
+           _base.get() == FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T);
   }
   // TODO move _base pointer to future_prototype.
   [[nodiscard]] bool empty() const noexcept { return _base == nullptr; }
@@ -1214,13 +1225,14 @@ struct future
     a.swap(b);
   }
 
-  explicit future(detail::continuation_base<Tag, T>* ptr) noexcept : _base(ptr) {}
+  explicit future(detail::continuation_base<Tag, T>* ptr) noexcept
+      : _base(ptr) {}
 
  private:
   template <typename, typename>
   friend struct future;
 
-  void cleanup_local_state() {
+  void cleanup_local_state() noexcept {
     detail::internal_store<Tag, T>::destroy();
     _base.reset();
   }
@@ -1243,11 +1255,16 @@ struct future_type_based_extensions<expect::expected<T>, Fut, Tag>
             typename R = std::invoke_result_t<F, U&&>>
   auto then(F&& f) && noexcept {
     // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
-    static_assert(std::is_nothrow_move_constructible_v<std::decay_t<F>>);
+    static_assert(std::is_nothrow_constructible_v<F, F>,
+                  "the lambda object must be nothrow constructible from "
+                  "itself. You should pass it as rvalue reference and it "
+                  "should be nothrow move constructible. If it's passed as "
+                  "lvalue reference it has to be nothrow copyable.");
     static_assert(!is_future_like_v<R>);
     return std::move(self()).and_then(
-        [f = std::forward<F>(f)](expect::expected<T>&& e) mutable noexcept
-        -> expect::expected<R> { return std::move(e).map_value(f); });
+        [f = std::forward<F>(f)](expect::expected<T>&& e) mutable noexcept -> expect::expected<R> {
+          return std::move(e).map_value(std::forward<F>(f));
+        });
   }
 
   template <typename F, typename U = T, std::enable_if_t<std::is_void_v<U>, int> = 0,
