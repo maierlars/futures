@@ -30,12 +30,26 @@ template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, 
           typename R = std::invoke_result_t<F, Args...>, std::enable_if_t<!is_expected_v<R>, int> = 0>
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R>;
 
+/**
+ * Invokes `f` with `args...` and captures the returns the result. If
+ * and exception is thrown is it also captured and returned instead.
+ * @tparam F Callable
+ * @tparam Args Argument types
+ * @tparam R Return value of `f`.
+ * @param f Callable
+ * @param args Argument values
+ * @return `expected<R>` as result of `f(args...)` or a exception.
+ */
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int> = 0,
           typename R = std::invoke_result_t<F, Args...>, std::enable_if_t<is_expected_v<R>, int> = 0>
 auto captured_invoke(F&& f, Args&&... args) noexcept -> R;
 
 namespace detail {
 
+/**
+ * Common base class for specialisations of `expected<T>`.
+ * @tparam T value type
+ */
 template <typename T>
 struct expected_base {
   /**
@@ -54,7 +68,7 @@ struct expected_base {
    * Tests whether this holds an exception of type `E`. This method is slow
    * because it has to rethrow the exception to inspect its type.
    * @tparam E
-   * @return
+   * @return true if `this` holds an exception of type `E`.
    */
   template <typename E>
   [[nodiscard]] bool has_exception() const noexcept {
@@ -119,7 +133,8 @@ struct expected_base {
   }
 
   /**
-   * Rethrows any exception with `E` constructed using `args...`.
+   * Rethrows any exception with `E` constructed using `args...`. `E` is
+   * constructed only if an exception is present.
    * @tparam E
    * @tparam Args
    * @param args
@@ -173,10 +188,8 @@ struct expected_base {
   using value_type = T;
 
  private:
-  [[nodiscard]] expected<T>& self() & {
-    return static_cast<expected<T>&>(*this);
-  }
-  [[nodiscard]] expected<T> const& self() const& {
+  [[nodiscard]] expected<T>& self() { return static_cast<expected<T>&>(*this); }
+  [[nodiscard]] expected<T> const& self() const {
     return static_cast<expected<T> const&>(*this);
   }
 };
@@ -382,7 +395,6 @@ struct expected<void> : detail::expected_base<void> {
 
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
           typename R, std::enable_if_t<!is_expected_v<R>, int>>
-
 auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
   try {
     if constexpr (std::is_void_v<R>) {
@@ -398,7 +410,6 @@ auto captured_invoke(F&& f, Args&&... args) noexcept -> expected<R> {
 
 template <typename F, typename... Args, std::enable_if_t<std::is_invocable_v<F, Args...>, int>,
           typename R, std::enable_if_t<is_expected_v<R>, int>>
-
 auto captured_invoke(F&& f, Args&&... args) noexcept -> R {
   try {
     return std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
