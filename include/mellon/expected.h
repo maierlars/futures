@@ -204,20 +204,44 @@ template <typename T>
 struct expected : detail::expected_base<T> {
   static_assert(!std::is_void_v<T> && !std::is_reference_v<T>);
 
+  /**
+   * Default constructs a value into the result. Only available if `T` is
+   * default constructible.
+   */
   template <typename U = T, std::enable_if_t<std::is_default_constructible_v<U>, int> = 0>
   expected() noexcept(std::is_nothrow_default_constructible_v<T>)
       : expected(std::in_place) {}
 
+  /**
+   * Stores the exception pointer.
+   * @param p exception pointer
+   */
   /* implicit */ expected(std::exception_ptr p) noexcept
       : _exception(std::move(p)), _has_value(false) {}
+  /**
+   * Stores the given value.
+   * @param t value
+   */
   /* implicit */ expected(T t) noexcept(std::is_nothrow_move_constructible_v<T>)
       : _value(std::move(t)), _has_value(true) {}
 
-  template <typename... Ts, std::enable_if_t<std::is_constructible_v<T, Ts...>, int> = 0>
+  /**
+   * In place constructs a `T` using the given parameters. If the constructor
+   * of `T` throws an exception it is *not* captured in the expected but bubbles
+   * up.
+   * @tparam Args argument types
+   * @param ts argument values
+   */
+  template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit expected(std::in_place_t,
-                    Ts&&... ts) noexcept(std::is_nothrow_constructible_v<T, Ts...>)
-      : _value(std::forward<Ts>(ts)...), _has_value(true) {}
+                    Args&&... ts) noexcept(std::is_nothrow_constructible_v<T, Args...>)
+      : _value(std::forward<Args>(ts)...), _has_value(true) {}
 
+  /**
+   * Move constructor. Only available if `T` is move constructible.
+   * @tparam U
+   * @param o
+   */
   template <typename U = T, std::enable_if_t<std::is_move_constructible_v<U>, int> = 0>
   /* implicit */ expected(expected&& o) noexcept(std::is_nothrow_move_constructible_v<T>)
       : _has_value(o._has_value) {
@@ -228,8 +252,16 @@ struct expected : detail::expected_base<T> {
     }
   }
 
+  /**
+   * Conversion constructor. Only present if `U` is convertible to `T`.
+   * Converts a value from `U` to `T` and keeps all exceptions. Exceptions during
+   * conversion are not captured.
+   * @tparam U
+   * @param u
+   */
   template <typename U, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
-  expected(expected<U>&& u) : expected(std::move(u).template as<T>()) {}
+  expected(expected<U>&& u) noexcept(false /* std::is_nothrow_convertible_v<U, T> C++20 */)
+      : expected(std::move(u).template as<T>()) {}
 
   ~expected() {
     if (_has_value) {
@@ -356,6 +388,9 @@ struct expected : detail::expected_base<T> {
   const bool _has_value;
 };
 
+/**
+ * Void specialised version of expected. Stores a single exception pointer.
+ */
 template <>
 struct expected<void> : detail::expected_base<void> {
   expected() = default;
@@ -380,6 +415,12 @@ struct expected<void> : detail::expected_base<void> {
     return nullptr;
   }
 
+  /**
+   * Invokes `f` if no exception is present. Otherwise does nothing.
+   * @tparam F
+   * @param f
+   * @return captured return value of `f`.
+   */
   template <typename F, std::enable_if_t<std::is_invocable_v<F>, int> = 0>
   auto map_value(F&& f) && noexcept -> expected<std::invoke_result_t<F>> {
     if (has_error()) {

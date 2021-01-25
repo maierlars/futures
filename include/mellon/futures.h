@@ -1401,11 +1401,6 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
         expect::captured_invoke(std::forward<F>(f), std::forward<Args>(args)...));
   }
 
-  template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
-  void fulfill(Args&&... args) && noexcept(std::is_nothrow_constructible_v<T, Args...>) {
-    std::move(self()).fulfill(std::in_place, std::forward<Args>(args)...);
-  }
-
   /**
    * Throws `e` into the promise.
    * @tparam E
