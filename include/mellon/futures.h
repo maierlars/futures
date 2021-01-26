@@ -115,23 +115,31 @@ inline constexpr auto is_future_like_v = is_future_v<T> || is_future_temporary_v
 template <typename T, typename Tag = default_tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>>;
 
+
 namespace detail {
+#ifdef MELLON_RECORD_BACKTRACE
+extern thread_local std::string* current_backtrace_ptr;
+auto generate_backtrace_string() noexcept -> std::string;
+#endif
+
 template <typename Tag, typename T>
 struct handler_helper {
-  static T abandon_promise() noexcept {
+  static T abandon_promise(std::string* bt = nullptr) noexcept {
+#ifdef MELLON_RECORD_BACKTRACE
+    current_backtrace_ptr = bt;
+#endif
     return detail::tag_trait_helper<Tag>::template abandon_promise<T>();
   }
 
   template <typename U>
-  static void abandon_future(U&& u) noexcept {
+  static void abandon_future(U&& u, std::string* bt = nullptr) noexcept {
+#ifdef MELLON_RECORD_BACKTRACE
+    current_backtrace_ptr = bt;
+#endif
     detail::tag_trait_helper<Tag>::template abandon_future<T>(std::forward<U>(u));
   }
 };
 
-}
-
-
-namespace detail {
 template <typename T>
 struct continuation;
 template <typename Tag, typename T, std::size_t = tag_trait_helper<Tag>::finally_prealloc_size()>
@@ -166,7 +174,7 @@ void fulfill_continuation(continuation_base<Tag, T>* base,
         detail::tag_trait_helper<Tag>::assert_true(
             expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T),
             "invalid continuation state");
-        detail::handler_helper<Tag, T>::abandon_future(base->cast_move());
+        detail::handler_helper<Tag, T>::abandon_future(base->cast_move(), base->get_backtrace());
         static_assert(std::is_nothrow_destructible_v<T>);
       }
 
@@ -180,12 +188,20 @@ template <typename Tag, typename T>
 void abandon_continuation(continuation_base<Tag, T>* base) noexcept {
   detail::tag_trait_helper<Tag>::debug_assert_true(
       base != nullptr, "continuation pointer is null");
+
+#ifdef MELLON_RECORD_BACKTRACE
+  {
+      std::unique_lock guard(base->_abt_guard);
+      base->_abt = generate_backtrace_string();
+  }
+#endif
+
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T),
                                            std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
     if (expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
-      detail::handler_helper<Tag, T>::abandon_future(base->cast_move());
+      detail::handler_helper<Tag, T>::abandon_future(base->cast_move(), base->get_backtrace());
       static_assert(std::is_nothrow_destructible_v<T>);
       base->destroy();
     } else {
@@ -201,6 +217,13 @@ template <typename Tag, typename T>
 void abandon_promise(continuation_start<Tag, T>* base) noexcept {
   detail::tag_trait_helper<Tag>::debug_assert_true(
       base != nullptr, "continuation pointer is null");
+#ifdef MELLON_RECORD_BACKTRACE
+  {
+    std::unique_lock guard(base->_abt_guard);
+    base->_abt = generate_backtrace_string();
+  }
+#endif
+
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T),
                                            std::memory_order_release,
@@ -208,7 +231,7 @@ void abandon_promise(continuation_start<Tag, T>* base) noexcept {
     if (expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
       delete base;  // we all agreed on not having this promise-init_future-chain
     } else {
-      return fulfill_continuation<Tag>(base, detail::handler_helper<Tag, T>::abandon_promise());
+      return fulfill_continuation<Tag>(base, detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace()));
     }
   }
 }
@@ -252,17 +275,26 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
   continuation<T>* expected = nullptr;
   if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
-    detail::tag_trait_helper<Tag>::assert_true(expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
-                                               "invalid continuation state");
+    T value = std::invoke([&] {
+      if (expected == FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T)) {
+        return detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace());
+      } else {
+        detail::tag_trait_helper<Tag>::assert_true(
+            expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
+            "invalid continuation state");
+        return base->cast_move();
+      }
+    });
+
     if constexpr (future<R, Tag>::is_value_inlined) {
-      auto fut = future<R, Tag>{std::in_place, std::invoke(step->function_self(),
-                                                           base->cast_move())};
+      auto fut = future<R, Tag>{std::in_place,
+                                std::invoke(step->function_self(), std::move(value))};
       base->destroy();
       delete base;
       delete step;
       return fut;
     } else {
-      step->emplace(std::invoke(step->function_self(), base->cast_move()));
+      step->emplace(std::invoke(step->function_self(), std::move(value)));
       base->destroy();
       delete base;
     }
@@ -307,6 +339,13 @@ struct continuation_base : memory_buffer<prealloc_size>, box<T> {
   virtual ~continuation_base() = default;
 
   std::atomic<continuation<T>*> _next = nullptr;
+#ifdef MELLON_RECORD_BACKTRACE
+  std::string _abt; // backtrace for abandoned objects
+  std::mutex _abt_guard;
+  std::string* get_backtrace() { return &_abt; }
+#else
+  std::string* get_backtrace() { return nullptr; }
+#endif
 };
 
 template <typename Tag, typename T>
@@ -377,7 +416,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   if (!base->_next.compare_exchange_strong(expected, cont, std::memory_order_release,
                                            std::memory_order_acquire)) {  // ask mpoeter
     if (expected == FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T)) {
-      cont->operator()(detail::handler_helper<Tag, T>::abandon_promise());
+      cont->operator()(detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace()));
     } else {
       detail::tag_trait_helper<Tag>::assert_true(expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
           "invalid continuation state");
