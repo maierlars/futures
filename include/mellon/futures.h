@@ -917,9 +917,8 @@ struct future
 
   static_assert(!std::is_void_v<T>,
                 "void is not supported, use std::monostate instead");
-  static_assert(
-      !is_future_v<T>,
-      "init_future<init_future<T>> is a bad idea and thus not supported");
+  static_assert(!is_future_v<T>,
+                "future<future<T>> is a bad idea and thus not supported");
   static_assert(std::is_nothrow_move_constructible_v<T>);
   static_assert(std::is_nothrow_destructible_v<T>);
 
@@ -1462,8 +1461,28 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
    * @param e
    */
   template <typename E, typename... Args, std::enable_if_t<std::is_constructible_v<E, Args...>, int> = 0>
-  void throw_exception(Args&&... args) noexcept(std::is_nothrow_constructible_v<E, Args...>) {
+  void throw_exception(Args&&... args) && noexcept(std::is_nothrow_constructible_v<E, Args...>) {
     std::move(self()).throw_into(E(std::forward<Args>(args)...));
+  }
+
+  template <typename E, typename... Args, std::enable_if_t<std::is_constructible_v<E, Args...>, int> = 0>
+  void throw_with_nested(Args&&... args) && noexcept(std::is_nothrow_constructible_v<E, Args...>) {
+    if (std::uncaught_exceptions() != 0) {
+      std::move(self()).capture([&]() -> T {
+        std::throw_with_nested(E(std::forward<Args>(args)...));
+      });
+    } else {
+      std::move(self()).template throw_exception<E>(std::forward<Args>(args)...);
+    }
+  }
+
+  void capture_current_exception() && noexcept {
+    if (std::uncaught_exceptions() != 0) {
+      std::move(self()).fulfill(std::current_exception());
+    } else {
+      std::move(self()).template throw_exception<std::logic_error>(
+          "no uncaught exception");
+    }
   }
 
  private:
