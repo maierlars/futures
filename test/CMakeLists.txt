@@ -7,4 +7,4 @@ target_link_libraries(mellon-test PRIVATE gtest)
 target_link_libraries(mellon-test PRIVATE mellon)
 
 enable_testing()
-add_test(NAME future-test COMMAND mellon-test)
+add_test(NAME mellon-test COMMAND mellon-test)
