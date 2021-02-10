@@ -20,7 +20,7 @@ if (MELLON_RECORD_PENDING_OBJECTS)
 endif()
 
 set(MELLON_GTEST_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/gtest")
-option(MELLON_BUILD_TESTS "Build tests for futures using GTest" Off)
+option(MELLON_BUILD_TESTS "Build tests for futures using GTest" On)
 if (MELLON_BUILD_TESTS)
     add_subdirectory(${MELLON_GTEST_DIRECTORY})
     add_subdirectory(test)
