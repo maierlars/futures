@@ -188,18 +188,11 @@ std::size_t swap_tester::constructor_counter = 0;
 
 TEST_F(SwapTests, swap_futures_with_inline_value_swap_test) {
 
-  auto f1 = future<swap_tester>{std::in_place, 1};
-  auto f2 = future<swap_tester>{std::in_place, 2};
-
-  if (!f1.holds_inline_value()) {
-    ASSERT_TRUE(!f2.holds_inline_value());
-    GTEST_SKIP() << "inline value disabled -- skipping test";
-  }
-
-
   signal_marker reached_last_1{"reached-last-1"};
   signal_marker reached_last_2{"reached-last-2"};
 
+  auto f1 = future<swap_tester>{std::in_place, 1};
+  auto f2 = future<swap_tester>{std::in_place, 2};
 
   using std::swap;
   swap(f1, f2);
