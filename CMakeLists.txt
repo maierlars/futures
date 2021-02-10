@@ -8,9 +8,14 @@ add_library(mellon src/futures.cpp include/mellon/utilities.h include/mellon/com
 target_include_directories(mellon PUBLIC include)
 
 option(MELLON_RECORD_BACKTRACE_ABANDONED_OBJECTS "Record the backtrace of abandoned objects" Off)
-
 if (MELLON_RECORD_BACKTRACE_ABANDONED_OBJECTS)
     target_compile_definitions(mellon PUBLIC MELLON_RECORD_BACKTRACE)
+    target_link_libraries(mellon unwind)
+endif()
+
+option(MELLON_RECORD_PENDING_OBJECTS "Record the backtrace all pending objects" Off)
+if (MELLON_RECORD_PENDING_OBJECTS)
+    target_compile_definitions(mellon PUBLIC MELLON_RECORD_PENDING_OBJECTS)
     target_link_libraries(mellon unwind)
 endif()
 
