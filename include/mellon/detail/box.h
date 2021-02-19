@@ -1,6 +1,6 @@
 #ifndef FUTURES_BOX_H
 #define FUTURES_BOX_H
-#include <cstddef>
+
 namespace mellon::detail {
 
 template <typename T, unsigned = 0>
