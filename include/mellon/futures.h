@@ -306,6 +306,7 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
       return fut;
     } else {
       step->emplace(std::invoke(step->function_self(), std::move(value)));
+      step->_next = FUTURES_INVALID_POINTER_PROMISE_FULFILLED(R);
       base->destroy();
       delete base;
     }
@@ -665,7 +666,7 @@ struct future_prototype {
       bool was_waiting;
       {
         std::unique_lock guard(data.mutex);
-        data.box.template emplace(std::move(v));
+        data.box.emplace(std::move(v));
         data.has_value = true;
         was_waiting = data.is_waiting;
       }
@@ -703,13 +704,12 @@ struct future_prototype {
 
     auto ctx = std::make_shared<await_context>();
     move_self().finally([ctx](T&& v) noexcept {
-      bool was_waiting, was_abandoned;
+      bool was_waiting;
       {
         std::unique_lock guard(ctx->mutex);
         ctx->box.template emplace(std::move(v));
         ctx->has_value = true;
         was_waiting = ctx->is_waiting;
-        was_abandoned = ctx->abandoned;
       }
       if (ctx->abandoned) {
         return detail::handler_helper<Tag, T>::abandon_future(std::move(v));
