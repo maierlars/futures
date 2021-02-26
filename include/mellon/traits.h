@@ -231,7 +231,7 @@ struct tag_trait_helper {
   }
 
   template<typename T>
-  static T* allocate() {
+  static void* allocate() {
     if constexpr (has_allocator<Tag>::value) {
 #if FUTURES_COUNT_ALLOC
       number_of_allocations.fetch_add(1, std::memory_order_relaxed);
@@ -245,7 +245,7 @@ struct tag_trait_helper {
     }
   }
   template<typename T>
-  static T* allocate(std::nothrow_t) {
+  static void* allocate(std::nothrow_t) {
     if constexpr (has_allocator<Tag>::value) {
 #if FUTURES_COUNT_ALLOC
       number_of_allocations.fetch_add(1, std::memory_order_relaxed);

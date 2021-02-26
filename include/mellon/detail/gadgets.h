@@ -52,16 +52,13 @@ struct size_tester {
 template <std::size_t Size>
 struct memory_buffer {
   template <typename T>
-  T* try_allocate() noexcept {
+  void* try_allocate() noexcept {
     size_tester<sizeof(T), Size, alignof(T)> test;
     (void)test;
     void* data = store;
     std::size_t size = Size;
     void* base = std::align(alignof(T), sizeof(T), data, size);
-    if (base == nullptr) {
-      return nullptr;
-    }
-    return reinterpret_cast<T*>(base);
+    return base;
   }
 
   std::byte store[Size] = {};
@@ -70,7 +67,7 @@ struct memory_buffer {
 template <>
 struct memory_buffer<0> {
   template <typename T>
-  T* try_allocate() noexcept {
+  void* try_allocate() noexcept {
     return nullptr;
   }
 };

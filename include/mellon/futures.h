@@ -39,12 +39,12 @@ struct tag_trait<default_tag> {
   struct allocator {
     // TODO is this how you do such things?
     template <typename T>
-    static T* allocate() {
-      return reinterpret_cast<T*>(::operator new(sizeof(T)));
+    static void* allocate() {
+      return ::operator new(sizeof(T));
     }
     template <typename T>
-    static T* allocate(std::nothrow_t) noexcept {
-      return reinterpret_cast<T*>(::operator new(sizeof(T), std::nothrow));
+    static void* allocate(std::nothrow_t) noexcept {
+      return ::operator new(sizeof(T), std::nothrow);
     }
   };
 
@@ -252,9 +252,8 @@ auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {
   static_assert(std::is_nothrow_constructible_v<T, Args...>,
                 "type should be nothrow constructable");
   auto frame = detail::tag_trait_helper<Tag>::template allocate<T>(std::nothrow);
-  new (frame) T(std::forward<Args>(args)...);
   detail::tag_trait_helper<Tag>::assert_true(frame != nullptr, "critical allocation failed");
-  return frame;
+  return new (frame) T(std::forward<Args>(args)...);
 }
 
 template <typename Tag, typename T, typename F, typename R, typename G>
@@ -485,11 +484,10 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
 
   // try to emplace the final into the steps local memory
   continuation<T>* cont;
-  auto* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
+  void* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
   if (mem != nullptr) {
-    new (mem)
+    cont = new (mem)
         continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
-    cont = mem;
 #ifdef FUTURES_COUNT_ALLOC
     ::mellon::detail::number_of_prealloc_usage.fetch_add(1, std::memory_order_relaxed);
 #endif
