@@ -25,15 +25,15 @@ struct box {
 
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   void emplace(Args&&... args) noexcept(std::is_nothrow_constructible_v<T, Args...>) {
-    new (ptr()) T(std::forward<Args>(args)...);
+    new (&value) T(std::forward<Args>(args)...);
   }
 
   void destroy() noexcept(std::is_nothrow_destructible_v<T>) {
     std::destroy_at(ptr());
   }
 
-  T* ptr() { return reinterpret_cast<T*>(value); }
-  T const* ptr() const { return reinterpret_cast<T const*>(value); }
+  T* ptr() { return reinterpret_cast<T*>(&value); }
+  T const* ptr() const { return reinterpret_cast<T const*>(&value); }
 
   T& ref() & { return *ptr(); }
   T const& ref() const& { return *ptr(); }
@@ -56,7 +56,7 @@ struct box {
   }
 
  private:
-  alignas(T) std::byte value[sizeof(T)] = {};
+   std::aligned_storage_t<sizeof(T), alignof(T)> value;
 };
 
 template <>
