@@ -907,6 +907,7 @@ struct future_temporary
   template <typename G, std::enable_if_t<std::is_nothrow_invocable_v<G, R&&>, int> = 0,
             typename S = std::invoke_result_t<G, R&&>>
   auto and_then(G&& f) && noexcept {
+    static_assert(!std::is_same_v<S, void>, "the lambda object must return a value");
 #ifdef FUTURES_COUNT_ALLOC
     ::mellon::detail::number_of_temporary_objects.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -1137,6 +1138,7 @@ struct future
   template <typename F, std::enable_if_t<std::is_nothrow_invocable_v<F, T&&>, int> = 0,
             typename R = std::invoke_result_t<F, T&&>>
   auto and_then(F&& f) && noexcept {
+    static_assert(!std::is_same_v<R, void>, "the lambda object must return a value");
     detail::tag_trait_helper<Tag>::debug_assert_true(!empty(), "and_then called on empty future");
     if constexpr (detail::tag_trait_helper<Tag>::is_disable_temporaries()) {
       return std::move(*this).and_then_direct(std::forward<F>(f));
