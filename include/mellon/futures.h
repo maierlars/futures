@@ -641,7 +641,7 @@ inline constexpr auto has_constructor_v =
  * @tparam Fut Parent class template expecting one parameter.
  */
 template <typename T, template <typename> typename Fut, typename Tag>
-struct future_prototype {
+struct FUTURES_EMPTY_BASE future_prototype {
   static_assert(!std::is_void_v<T>);
 
   using value_type = T;
@@ -707,7 +707,7 @@ struct future_prototype {
       bool was_waiting;
       {
         std::unique_lock guard(ctx->mutex);
-        ctx->box.template emplace(std::move(v));
+        ctx->box.emplace(std::move(v));
         ctx->has_value = true;
         was_waiting = ctx->is_waiting;
       }
@@ -814,8 +814,8 @@ struct future_prototype {
 };
 
 template <typename T, template <typename> typename Fut, typename Tag>
-struct future_base : user_defined_additions_t<Tag, T, Fut>,
-                     future_type_based_extensions<T, Fut, Tag> {
+struct FUTURES_EMPTY_BASE future_base : user_defined_additions_t<Tag, T, Fut>,
+                                        future_type_based_extensions<T, Fut, Tag> {
   static_assert(std::is_base_of_v<future_prototype<T, Fut, Tag>, future_type_based_extensions<T, Fut, Tag>>);
 };
 
@@ -825,7 +825,7 @@ using internal_store =
 }  // namespace detail
 
 template <typename T, template <typename> typename F, typename Tag>
-struct future_type_based_extensions : detail::future_prototype<T, F, Tag> {};
+struct FUTURES_EMPTY_BASE future_type_based_extensions : detail::future_prototype<T, F, Tag> {};
 
 /**
  * A temporary object that is used to chain together multiple `and_then` calls
@@ -944,13 +944,13 @@ struct future_temporary
         ::mellon::detail::number_of_and_then_on_inline_future.fetch_add(1, std::memory_order_relaxed);
 #endif
         static_assert(std::is_nothrow_move_constructible_v<R>);
-        auto f =
+        static_assert(std::is_nothrow_destructible_v<T>);
+        auto ff =
             future<R, Tag>(std::in_place,
                            std::invoke(detail::function_store<F>::function_self(),
                                        detail::internal_store<Tag, T>::cast_move()));
-        static_assert(std::is_nothrow_destructible_v<T>);
         cleanup_local_state();
-        return f;
+        return ff;
       }
     }
 

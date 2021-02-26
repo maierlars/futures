@@ -47,12 +47,12 @@ template <typename T>
 inline constexpr auto is_use_default_handler_v = is_use_default_handler<T>::value;
 
 template<typename Tag, typename T, template<typename> typename Fut, typename = void>
-struct user_defined_additions {
+struct FUTURES_EMPTY_BASE user_defined_additions {
   struct type {};
 };
 
 template<typename Tag, typename T, template<typename> typename Fut>
-struct user_defined_additions<Tag, T, Fut, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_additions<T, Fut>{})>> {
+struct FUTURES_EMPTY_BASE user_defined_additions<Tag, T, Fut, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_additions<T, Fut>{})>> {
   using type = typename tag_trait<Tag>::template user_defined_additions<T, Fut>;
 };
 
@@ -60,12 +60,12 @@ template<typename Tag, typename T, template<typename> typename Fut>
 using user_defined_additions_t = typename user_defined_additions<Tag, T, Fut>::type;
 
 template<typename Tag, typename T, typename = void>
-struct user_defined_promise_additions {
+struct FUTURES_EMPTY_BASE user_defined_promise_additions {
   struct type {};
 };
 
 template<typename Tag, typename T>
-struct user_defined_promise_additions<Tag, T, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_promise_additions<T>{})>> {
+struct FUTURES_EMPTY_BASE user_defined_promise_additions<Tag, T, std::void_t<decltype(typename tag_trait<Tag>::template user_defined_promise_additions<T>{})>> {
   using type = typename tag_trait<Tag>::template user_defined_promise_additions<T>;
 };
 

@@ -1,6 +1,14 @@
 #ifndef FUTURES_GADGETS_H
 #define FUTURES_GADGETS_H
 
+#ifndef FUTURES_EMPTY_BASE
+#ifdef _MSC_VER
+#define FUTURES_EMPTY_BASE __declspec(empty_bases)
+#else
+#define FUTURES_EMPTY_BASE
+#endif
+#endif
+
 namespace mellon::detail {
 template <typename T>
 struct no_deleter {
@@ -11,7 +19,7 @@ template <typename T>
 using unique_but_not_deleting_pointer = std::unique_ptr<T, no_deleter<T>>;  // TODO find a better name
 
 template <typename F, typename Func = std::decay_t<F>, typename = std::enable_if_t<std::is_class_v<Func>>>
-struct function_store : Func {
+struct FUTURES_EMPTY_BASE function_store : Func {
   template <typename G = F>
   explicit function_store(std::in_place_t,
       G&& f) noexcept(std::is_nothrow_constructible_v<Func, G>)
@@ -69,13 +77,13 @@ struct memory_buffer<0> {
 
 
 template <typename F, unsigned>
-struct composer_tag : function_store<F> {
+struct FUTURES_EMPTY_BASE composer_tag : function_store<F> {
   using function_store<F>::function_store;
   using function_store<F>::function_self;
 };
 
 template <typename F, typename G>
-struct composer : composer_tag<F, 0>, composer_tag<G, 1> {
+struct FUTURES_EMPTY_BASE composer : composer_tag<F, 0>, composer_tag<G, 1> {
   template <typename S, typename T>
   explicit composer(S&& s, T&& t)
       : composer_tag<F, 0>(std::in_place, std::forward<S>(s)),
