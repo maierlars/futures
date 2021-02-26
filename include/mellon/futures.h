@@ -174,9 +174,15 @@ void fulfill_continuation(continuation_base<Tag, T>* base,
   static_assert(std::is_nothrow_destructible_v<T>,
                 "type should be nothrow destructible.");
   std::invoke([&]() noexcept {
-    continuation<T>* expected = nullptr;
-    if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
-                                             std::memory_order_release,
+    // (1) - this acquire-load synchronizes-with the release-CAS (4, 8, 10)
+    continuation<T>* expected = base->_next.load(std::memory_order_acquire);
+    if (expected != nullptr || 
+        // (2) - the release-store synchronizes-with the acquire-(re)load (3, 4, 7, 8, 9, 10)
+        //       the acquire-reload synchronizes-with the release-CAS (4, 8, 10)
+        // Note: it would be sufficient to use memory_order_release for the success cases, but
+        // since TSan does not support failure-orders, we use acq-rel to avoid false positives.
+        !base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T),
+                                             std::memory_order_acq_rel,
                                              std::memory_order_acquire)) {
       if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
         std::invoke(*expected, base->cast_move());
@@ -207,10 +213,16 @@ void abandon_continuation(continuation_base<Tag, T>* base) noexcept {
   }
 #endif
 
-  continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T),
-                                           std::memory_order_release,
-                                           std::memory_order_acquire)) {  // ask mpoeter
+  // (3) - this acquire-load synchronizes-with the release-CAS (2, 6)
+  continuation<T>* expected = base->_next.load(std::memory_order_acquire);
+  if (expected != nullptr ||
+      // (4) - the release-store synchronizes-with the acquire-(re)load (1, 2, 5, 6)
+      //       the acquire-reload synchronizes-with the release-CAS (2, 6)
+      // Note: it would be sufficient to use memory_order_release for the success cases, but
+      // since TSan does not support failure-orders, we use acq-rel to avoid false positives.
+      !base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T),
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
     if (expected == FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
       detail::handler_helper<Tag, T>::abandon_future(base->cast_move(), base->get_backtrace());
       static_assert(std::is_nothrow_destructible_v<T>);
@@ -235,10 +247,16 @@ void abandon_promise(continuation_start<Tag, T>* base) noexcept {
   }
 #endif
 
-  continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T),
-                                           std::memory_order_release,
-                                           std::memory_order_acquire)) {  // ask mpoeter
+  // (5) - this acquire-load synchronizes-with the release-CAS (4, 8, 10)
+  continuation<T>* expected = base->_next.load(std::memory_order_acquire);
+  if (expected != nullptr || 
+      // (6) - the release-store synchronizes-with the acquire-(re)load (3, 4, 7, 8, 9, 10)
+      //       the acquire-reload synchronizes-with the release-CAS (4, 8, 10)
+      // Note: it would be sufficient to use memory_order_release for the success cases, but
+      // since TSan does not support failure-orders, we use acq-rel to avoid false positives.
+      !base->_next.compare_exchange_strong(expected, FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T),
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
     if (expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
       delete base;  // we all agreed on not having this promise-future-chain
     } else {
@@ -265,6 +283,7 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
   detail::tag_trait_helper<Tag>::debug_assert_true(
       base != nullptr, "continuation pointer is null");
 
+  // (7) - this acquire-load synchronizes-with the release-CAS (2, 6)
   if (base->_next.load(std::memory_order_acquire) ==
       FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
     // short path
@@ -283,8 +302,12 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
   auto step = detail::allocate_frame_noexcept<Tag, continuation_step<Tag, T, F, R>>(
       std::in_place, std::forward<G>(f));
   continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_release,
-                                           std::memory_order_acquire)) {  // ask mpoeter
+  // (8) - the release-store synchronizes-with the acquire-(re)load (1, 2, 5, 6)
+  //       the acquire-reload synchronizes-with the release-CAS (2, 6)
+  // Note: it would be sufficient to use memory_order_release for the success cases, but
+  // since TSan does not support failure-orders, we use acq-rel to avoid false positives.
+  if (!base->_next.compare_exchange_strong(expected, step, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
     T value = std::invoke([&] {
       if (expected == FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T)) {
         return detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace());
@@ -305,7 +328,7 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
       return fut;
     } else {
       step->emplace(std::invoke(step->function_self(), std::move(value)));
-      step->_next = FUTURES_INVALID_POINTER_PROMISE_FULFILLED(R);
+      step->_next.store(FUTURES_INVALID_POINTER_PROMISE_FULFILLED(R), std::memory_order_relaxed);
       base->destroy();
       delete base;
     }
@@ -463,6 +486,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   detail::tag_trait_helper<Tag>::debug_assert_true(
       base != nullptr, "continuation pointer is null");
 
+  // (9) - this acquire-load synchronizes-with the release-CAS (2, 6)
   if (base->_next.load(std::memory_order_acquire) ==
       FUTURES_INVALID_POINTER_PROMISE_FULFILLED(T)) {
     // short path
@@ -499,8 +523,12 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   detail::tag_trait_helper<Tag>::assert_true(
       cont != nullptr, "finally allocation failed unexpectedly");
   continuation<T>* expected = nullptr;
-  if (!base->_next.compare_exchange_strong(expected, cont, std::memory_order_release,
-                                           std::memory_order_acquire)) {  // ask mpoeter
+  // (10) - the release-store synchronizes-with the acquire-(re)load (1, 2, 5, 6)
+  //        the acquire-reload synchronizes-with the release-CAS (2, 6)
+  // Note: it would be sufficient to use memory_order_release for the success cases, but
+  // since TSan does not support failure-orders, we use acq-rel to avoid false positives.
+  if (!base->_next.compare_exchange_strong(expected, cont, std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
     if (expected == FUTURES_INVALID_POINTER_PROMISE_ABANDONED(T)) {
       cont->operator()(detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace()));
     } else {
@@ -645,7 +673,7 @@ struct FUTURES_EMPTY_BASE future_prototype {
   using value_type = T;
 
   /**
-   * _Blocks_ the current thread until the init_future is fulfilled. This
+   * _Blocks_ the current thread until the init_future is fulfilled. This is
    * **not** something you should do unless you have a very good reason to do
    * so. The whole point of futures is to make code non-blocking.
    *
