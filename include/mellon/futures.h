@@ -295,9 +295,7 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
     return fut;
   }
 
-#ifdef FUTURES_COUNT_ALLOC
-  ::mellon::detail::number_of_step_usage.fetch_add(1, std::memory_order_relaxed);
-#endif
+  FUTURES_INC_ALLOC_COUNTER(number_of_step_usage);
 
   auto step = detail::allocate_frame_noexcept<Tag, continuation_step<Tag, T, F, R>>(
       std::in_place, std::forward<G>(f));
@@ -497,13 +495,13 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   }
 
 #ifdef FUTURES_COUNT_ALLOC
-  std::size_t lambda_size = sizeof(continuation_final<T, F, deleter_destroy>);
-  double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
+  constexpr std::size_t lambda_size = sizeof(continuation_final<T, F, deleter_destroy>);
+  constexpr double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
   std::size_t bucket =
       static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
 
-  ::mellon::detail::number_of_final_usage.fetch_add(1, std::memory_order_relaxed);
-  ::mellon::detail::histogram_final_lambda_sizes[bucket].fetch_add(1, std::memory_order_relaxed);
+  FUTURES_INC_ALLOC_COUNTER(number_of_final_usage);
+  FUTURES_INC_ALLOC_COUNTER(histogram_final_lambda_sizes[bucket]);
 #endif
 
   // try to emplace the final into the steps local memory
@@ -512,9 +510,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
   if (mem != nullptr) {
     cont = new (mem)
         continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
-#ifdef FUTURES_COUNT_ALLOC
-    ::mellon::detail::number_of_prealloc_usage.fetch_add(1, std::memory_order_relaxed);
-#endif
+    FUTURES_INC_ALLOC_COUNTER(number_of_prealloc_usage);
   } else {
     cont = detail::allocate_frame_noexcept<Tag, continuation_final<T, F, deleter_dealloc>>(
         std::in_place, std::forward<F>(f));
@@ -908,9 +904,7 @@ struct future_temporary
             typename S = std::invoke_result_t<G, R&&>>
   auto and_then(G&& f) && noexcept {
     static_assert(!std::is_same_v<S, void>, "the lambda object must return a value");
-#ifdef FUTURES_COUNT_ALLOC
-    ::mellon::detail::number_of_temporary_objects.fetch_add(1, std::memory_order_relaxed);
-#endif
+    FUTURES_INC_ALLOC_COUNTER(number_of_temporary_objects);
     auto&& composition =
         detail::compose(std::forward<G>(f),
                         std::move(detail::function_store<F>::function_self()));
@@ -935,18 +929,14 @@ struct future_temporary
         std::is_nothrow_constructible_v<G, G>,
         "the lambda object must be nothrow constructible from itself. If it's "
         "passed as lvalue reference it has to be nothrow copyable.");
-#ifdef FUTURES_COUNT_ALLOC
-    ::mellon::detail::number_of_temporary_objects.fetch_add(1, std::memory_order_relaxed);
-#endif
+    FUTURES_INC_ALLOC_COUNTER(number_of_temporary_objects);
     auto&& composition =
         detail::compose(std::forward<G>(f),
                         std::move(detail::function_store<F>::function_self()));
 
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-#ifdef FUTURES_COUNT_ALLOC
-        ::mellon::detail::number_of_and_then_on_inline_future.fetch_add(1, std::memory_order_relaxed);
-#endif
+        FUTURES_INC_ALLOC_COUNTER(number_of_and_then_on_inline_future);
         std::invoke(composition, detail::internal_store<Tag, T>::cast_move());
         cleanup_local_state();
         return;
@@ -967,9 +957,7 @@ struct future_temporary
     detail::tag_trait_helper<Tag>::debug_assert_true(!empty(), "finalize called on empty temporary");
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-#ifdef FUTURES_COUNT_ALLOC
-        ::mellon::detail::number_of_and_then_on_inline_future.fetch_add(1, std::memory_order_relaxed);
-#endif
+        FUTURES_INC_ALLOC_COUNTER(number_of_and_then_on_inline_future);
         static_assert(std::is_nothrow_move_constructible_v<R>);
         static_assert(std::is_nothrow_destructible_v<T>);
         auto ff =
@@ -1094,22 +1082,18 @@ struct future
   explicit future(std::in_place_t, Args&&... args) noexcept(
       std::conjunction_v<std::is_nothrow_constructible<T, Args...>, std::bool_constant<is_value_inlined>>) {
 #ifdef FUTURES_COUNT_ALLOC
-    std::size_t lambda_size = sizeof(T);
-    double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
+    constexpr std::size_t lambda_size = sizeof(T);
+    constexpr double lambda_log2 = std::max(0.0, std::log2(lambda_size) - 2.0);
     std::size_t bucket =
         static_cast<std::size_t>(std::max(0., std::ceil(lambda_log2) - 1));
-    ::mellon::detail::histogram_value_sizes[bucket].fetch_add(1, std::memory_order_relaxed);
+    FUTURES_INC_ALLOC_COUNTER(histogram_value_sizes[bucket]);
 #endif
     if constexpr (is_value_inlined) {
-#ifdef FUTURES_COUNT_ALLOC
-      ::mellon::detail::number_of_inline_value_placements.fetch_add(1, std::memory_order_relaxed);
-#endif
+      FUTURES_INC_ALLOC_COUNTER(number_of_inline_value_placements);
       detail::internal_store<Tag, T>::emplace(std::forward<Args>(args)...);
       _base.reset(FUTURES_INVALID_POINTER_INLINE_VALUE(Tag, T));
     } else {
-#ifdef FUTURES_COUNT_ALLOC
-      ::mellon::detail::number_of_inline_value_allocs.fetch_add(1, std::memory_order_relaxed);
-#endif
+      FUTURES_INC_ALLOC_COUNTER(number_of_inline_value_allocs);
       // TODO no preallocated memory needed
       _base.reset(detail::tag_trait_helper<Tag>::template allocate_construct<detail::continuation_base<Tag, T>>(
           std::in_place, std::forward<Args>(args)...));
@@ -1173,9 +1157,7 @@ struct future
     detail::tag_trait_helper<Tag>::debug_assert_true(!empty(), "and_then called on empty future");
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-#ifdef FUTURES_COUNT_ALLOC
-        ::mellon::detail::number_of_and_then_on_inline_future.fetch_add(1, std::memory_order_relaxed);
-#endif
+        FUTURES_INC_ALLOC_COUNTER(number_of_and_then_on_inline_future);
         auto fut = future<R, Tag>{std::in_place,
                                   std::invoke(std::forward<F>(f), this->cast_move())};
         cleanup_local_state();
@@ -1203,9 +1185,7 @@ struct future
     detail::tag_trait_helper<Tag>::debug_assert_true(!empty(), "finally called on empty future");
     if constexpr (is_value_inlined) {
       if (holds_inline_value()) {
-#ifdef FUTURES_COUNT_ALLOC
-        ::mellon::detail::number_of_and_then_on_inline_future.fetch_add(1, std::memory_order_relaxed);
-#endif
+        FUTURES_INC_ALLOC_COUNTER(number_of_and_then_on_inline_future);
         std::invoke(std::forward<F>(f), detail::internal_store<Tag, T>::cast_move());
         cleanup_local_state();
         return;
@@ -1619,9 +1599,7 @@ struct promise_type_based_extension<expect::expected<T>, Tag> {
  */
 template <typename T, typename Tag>
 auto make_promise() -> std::pair<future<T, Tag>, promise<T, Tag>> {
-#ifdef FUTURES_COUNT_ALLOC
-  ::mellon::detail::number_of_promises_created.fetch_add(1, std::memory_order_relaxed);
-#endif
+  FUTURES_INC_ALLOC_COUNTER(number_of_promises_created);
   auto start =
       detail::tag_trait_helper<Tag>::template allocate_construct<detail::continuation_start<Tag, T>>();
   return std::make_pair(future<T, Tag>{detail::base_ptr, start},
