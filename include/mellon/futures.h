@@ -38,6 +38,11 @@ struct tag_trait<default_tag> {
     static void* allocate(std::nothrow_t) noexcept {
       return ::operator new(sizeof(T), std::nothrow);
     }
+    template <typename T>
+    static void release(T* p) noexcept {
+      p->~T();
+      ::operator delete(p);
+    }
   };
 
   struct assertion_handler {

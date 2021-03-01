@@ -29,10 +29,11 @@ struct FUTURES_EMPTY_BASE function_store : Func {
 };
 
 
+template <typename Tag>
 struct deleter_dealloc {
   template <typename T>
   void operator()(T* ptr) {
-    delete ptr;
+    detail::tag_trait_helper<Tag>::release(ptr);
   }
 };
 

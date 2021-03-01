@@ -259,6 +259,15 @@ struct tag_trait_helper {
       return tag_trait_helper<default_tag>::allocate<T>(std::nothrow);
     }
   }
+  
+  template<typename T>
+  static void release(T* p) {
+    if constexpr (has_allocator<Tag>::value) {
+      tag_trait<Tag>::allocator::release(p);
+    } else {
+      return tag_trait_helper<default_tag>::release(p);
+    }
+  }
 
   template<typename T, typename... Args>
   static T* allocate_construct(Args&&... args) {

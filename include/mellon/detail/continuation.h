@@ -78,7 +78,7 @@ void fulfill_continuation(continuation_base<Tag, T>* base,
       }
 
       base->destroy();
-      delete base;
+      detail::tag_trait_helper<Tag>::release(base);
     }
   });
 }
@@ -114,7 +114,7 @@ void abandon_continuation(continuation_base<Tag, T>* base) noexcept {
                                                  "invalid continuation state");
     }
 
-    delete base;
+    detail::tag_trait_helper<Tag>::release(base);
   }
 }
 
@@ -140,7 +140,7 @@ void abandon_promise(continuation_start<Tag, T>* base) noexcept {
                                            std::memory_order_acq_rel,
                                            std::memory_order_acquire)) {
     if (expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
-      delete base;  // we all agreed on not having this promise-future-chain
+      detail::tag_trait_helper<Tag>::release(base);  // we all agreed on not having this promise-future-chain
     } else {
       return fulfill_continuation<Tag>(base, detail::handler_helper<Tag, T>::abandon_promise(base->get_backtrace()));
     }
@@ -327,7 +327,7 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
     auto fut = future<R, Tag>{std::in_place,
                               std::invoke(std::forward<G>(f), base->cast_move())};
     base->destroy();
-    delete base;
+    detail::tag_trait_helper<Tag>::release(base);
     return fut;
   }
 
@@ -357,14 +357,14 @@ auto insert_continuation_step(continuation_base<Tag, T>* base, G&& f) noexcept
       auto fut = future<R, Tag>{std::in_place,
                                 std::invoke(step->function_self(), std::move(value))};
       base->destroy();
-      delete base;
-      delete step;
+      detail::tag_trait_helper<Tag>::release(base);
+      detail::tag_trait_helper<Tag>::release(step);
       return fut;
     } else {
       step->emplace(std::invoke(step->function_self(), std::move(value)));
       step->_next.store(FUTURES_INVALID_POINTER_PROMISE_FULFILLED(R), std::memory_order_relaxed);
       base->destroy();
-      delete base;
+      detail::tag_trait_helper<Tag>::release(base);
     }
   }
 
@@ -385,7 +385,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
     // short path
     std::invoke(std::forward<F>(f), base->cast_move());
     base->destroy();
-    delete base;
+    detail::tag_trait_helper<Tag>::release(base);
     return;
   }
 
@@ -407,7 +407,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
         continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
     FUTURES_INC_ALLOC_COUNTER(number_of_prealloc_usage);
   } else {
-    cont = detail::allocate_frame_noexcept<Tag, continuation_final<T, F, deleter_dealloc>>(
+    cont = detail::allocate_frame_noexcept<Tag, continuation_final<T, F, deleter_dealloc<Tag>>>(
         std::in_place, std::forward<F>(f));
   }
 
@@ -429,7 +429,7 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
       base->destroy();
     }
 
-    delete base;
+    detail::tag_trait_helper<Tag>::release(base);
   }
 }
 
