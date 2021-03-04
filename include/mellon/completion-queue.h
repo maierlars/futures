@@ -23,19 +23,15 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
   }
 
   auto await_all() noexcept -> value_type {
-    std::unique_lock guard(await_mutex);
-    // mpoeter - why do we need await_mutex?
-    std::unique_lock guard2(mutex);
-    cv.wait(guard2, [&] { return !completed_values.empty(); });
+    std::unique_lock guard(mutex);
+    cv.wait(guard, [&] { return !completed_values.empty(); });
     value_type v = std::move(completed_values.front());
     completed_values.pop();
     return v;
   }
 
   auto await() noexcept -> std::optional<value_type> {
-    std::unique_lock guard(await_mutex);
-    // mpoeter - why do we need await_mutex?
-    std::unique_lock guard2(mutex);
+    std::unique_lock guard(mutex);
     while (true) {
       if (!completed_values.empty()) {
         value_type v = std::move(completed_values.front());
@@ -47,7 +43,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
         return std::nullopt;
       }
       consumer_waiting = true;
-      cv.wait(guard2);
+      cv.wait(guard);
     }
   }
 
@@ -70,7 +66,6 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
   std::atomic<std::size_t> pending_futures = 0;
   std::queue<value_type> completed_values;
   std::mutex mutex;
-  std::mutex await_mutex;
   std::condition_variable cv;
 };
 
