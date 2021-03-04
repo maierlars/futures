@@ -15,7 +15,8 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
   using value_type = typename trait::value_type;
 
   void register_future(Fut&& f) {
-    pending_futures.fetch_add(1, std::memory_order_release);
+  // mpoeter - should we change this signature so that it can also take a future-temporary?
+    pending_futures.fetch_add(1, std::memory_order_relaxed);
     std::move(f).finally([self = this->shared_from_this()](value_type&& v) noexcept {
       self->on_completion(std::move(v));
     });
@@ -23,6 +24,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
 
   auto await_all() noexcept -> value_type {
     std::unique_lock guard(await_mutex);
+    // mpoeter - why do we need await_mutex?
     std::unique_lock guard2(mutex);
     cv.wait(guard2, [&] { return !completed_values.empty(); });
     value_type v = std::move(completed_values.front());
@@ -32,6 +34,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
 
   auto await() noexcept -> std::optional<value_type> {
     std::unique_lock guard(await_mutex);
+    // mpoeter - why do we need await_mutex?
     std::unique_lock guard2(mutex);
     while (true) {
       if (!completed_values.empty()) {
@@ -40,7 +43,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
         return v;
       }
 
-      if (pending_futures == 0) {
+      if (pending_futures.load(std::memory_order_relaxed) == 0) {
         return std::nullopt;
       }
       consumer_waiting = true;
@@ -55,7 +58,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
       std::unique_lock guard(mutex);
       completed_values.push(std::move(v));  // TODO this invocation is not noexcept
       std::swap(consumer_was_waiting, consumer_waiting);
-      pending_futures.fetch_sub(1, std::memory_order_release);
+      pending_futures.fetch_sub(1, std::memory_order_relaxed);
     }
 
     if (consumer_was_waiting) {
