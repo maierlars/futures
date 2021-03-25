@@ -453,8 +453,8 @@ struct future
   future(future<U, Tag>&& o) noexcept : future(std::move(o).template as<T>()) {}
 
   template <typename U, typename F, typename S, std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
-  future(future_temporary<S, F, U, Tag>&& o) noexcept
-      : future(std::move(o).template as<U>().finalize()) {}
+  explicit future(future_temporary<S, F, U, Tag>&& o) noexcept
+      : future(std::move(o).template as<T>().finalize()) {}
 
   /**
    * If the init_future was not used or moved away, the init_future is
