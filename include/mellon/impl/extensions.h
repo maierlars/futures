@@ -45,23 +45,6 @@ struct FUTURES_EMPTY_BASE future_type_based_extensions<expect::expected<T>, Fut,
         -> expect::expected<R> { return std::move(e).map_value(f); });
   }
 
-  /**
-   * If the `expected<T>` contains a value, the callback is called with the value.
-   * Otherwise it is not executed. Any thrown exception is captured by the `expected<T>`.
-   * @tparam F
-   * @tparam R
-   * @param f
-   * @return
-   */
-  // mpoeter - do we need this code or should we remove it?
-  /*template <typename F, std::enable_if_t<std::is_invocable_v<F, expect::expected<T>&&>, int> = 0,
-            typename R = std::invoke_result_t<F, expect::expected<T>&&>,
-            typename U = T, std::enable_if_t<!expect::is_expected_v<U>, int> = 0>
-  auto then(F&& f) && noexcept {
-    // TODO what if `F` returns an `expected<U>`. Do we want to flatten automagically?
-    return std::move(self()).and_capture(std::forward<F>(f));
-  }*/
-
   // mpoeter - documentation missing
   template <typename G, typename U = T, std::enable_if_t<std::is_invocable_v<G, U&&>, int> = 0,
             typename ReturnType = std::invoke_result_t<G, U&&>,
