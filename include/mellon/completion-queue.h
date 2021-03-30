@@ -14,8 +14,8 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
   using trait = future_trait<Fut>;
   using value_type = typename trait::value_type;
 
-  void register_future(Fut&& f) {
-  // mpoeter - should we change this signature so that it can also take a future-temporary?
+  template <typename T, std::enable_if_t<is_future_like_v<T>, int> = 0>
+  void register_future(T&& f) {
     pending_futures.fetch_add(1, std::memory_order_relaxed);
     std::move(f).finally([self = this->shared_from_this()](value_type&& v) noexcept {
       self->on_completion(std::move(v));
