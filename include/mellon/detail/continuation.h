@@ -6,6 +6,7 @@
 #endif
 
 #ifdef MELLON_RECORD_PENDING_OBJECTS
+#include <vector>
 #include <unordered_set>
 #endif
 
@@ -14,6 +15,12 @@
 #include "invalid-pointer-flags.h"
 
 namespace mellon::detail {
+
+
+#ifdef MELLON_RECORD_BACKTRACE
+extern thread_local std::vector<std::string>* current_backtrace_ptr;
+auto generate_backtrace_string() noexcept -> std::vector<std::string>;
+#endif
 
 template <typename Tag, typename T>
 struct handler_helper {
@@ -287,12 +294,6 @@ struct continuation_step final : continuation_base<Tag, R>,
   };
 #endif
 };
-
-
-#ifdef MELLON_RECORD_BACKTRACE
-extern thread_local std::vector<std::string>* current_backtrace_ptr;
-auto generate_backtrace_string() noexcept -> std::vector<std::string>;
-#endif
 
 #ifdef MELLON_RECORD_PENDING_OBJECTS
 auto generate_backtrace_string() noexcept -> std::vector<std::string>;
