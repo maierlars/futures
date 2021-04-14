@@ -16,6 +16,7 @@ struct completion_context : std::enable_shared_from_this<completion_context<Fut>
 
   template <typename T, std::enable_if_t<is_future_like_v<T>, int> = 0>
   void register_future(T&& f) {
+    static_assert(std::is_same_v<value_type, typename T::value_type>);
     pending_futures.fetch_add(1, std::memory_order_relaxed);
     std::move(f).finally([self = this->shared_from_this()](value_type&& v) noexcept {
       self->on_completion(std::move(v));

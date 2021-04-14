@@ -36,6 +36,9 @@ struct FUTURES_EMPTY_BASE future_type_based_extensions<expect::expected<T>, Fut,
         });
   }
 
+  /**
+   * @brief void-variant of @c{then}
+   */
   template <typename F, typename U = T, std::enable_if_t<std::is_void_v<U>, int> = 0,
             std::enable_if_t<std::is_invocable_v<F>, int> = 0, typename R = std::invoke_result_t<F>>
   auto then(F&& f) && noexcept {
