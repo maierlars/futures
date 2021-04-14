@@ -30,7 +30,7 @@ TEST(locks, async_lock_test) {
         executed = true;
         EXPECT_TRUE(mutex.is_locked());
         return std::monostate();
-      });
+      }).finalize();
 
   ASSERT_FALSE(executed);
   mutex.unlock();  // now the future should execute by the executor
@@ -55,7 +55,7 @@ TEST(locks, async_lock_test2) {
         EXPECT_EQ(executed, 0);
         executed = 1;
         return std::monostate();
-      });
+      }).finalize();
 
   auto f2 = mutex.async_lock().and_then(
       [&](std::unique_lock<mellon::future_mutex<default_test_tag>>&& lock) noexcept -> std::monostate {
@@ -63,7 +63,7 @@ TEST(locks, async_lock_test2) {
         EXPECT_EQ(executed, 1);
         executed = 2;
         return std::monostate();
-      });
+      }).finalize();
 
   ASSERT_FALSE(executed);
   mutex.unlock();  // now the future should execute by the executor
