@@ -13,6 +13,7 @@ TEST(locks, simple_test) {
         ASSERT_TRUE(mutex.is_locked());
       });
 
+  ASSERT_EQ(mutex.queue_length(), 0);
   ASSERT_FALSE(mutex.is_locked());
   ASSERT_TRUE(executed);
 }

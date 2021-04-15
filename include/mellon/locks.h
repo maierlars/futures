@@ -56,10 +56,14 @@ struct future_mutex {
   }
 
   [[nodiscard]] auto is_locked() const noexcept -> bool { return _is_locked; }
+  [[nodiscard]] auto queue_length() const noexcept -> std::size_t {
+    std::unique_lock guard(_mutex);
+    return _queue.size();
+  }
 
  private:
-  std::atomic<bool> _is_locked;
-  std::mutex _mutex;
+  std::atomic<bool> _is_locked = false;
+  mutable std::mutex _mutex;
   std::deque<promise<lock_guard, Tag>> _queue;
 
   Executor _executor;
