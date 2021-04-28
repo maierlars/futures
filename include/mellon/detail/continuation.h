@@ -40,11 +40,15 @@ struct handler_helper {
   }
 };
 
-struct void_continuation {
-  virtual ~void_continuation() = default;
+struct void_value_provider {
+  virtual ~void_value_provider() = default;
   virtual auto get_value_pointer() noexcept -> void* = 0;
   virtual void destroy_value() noexcept = 0;
-  virtual auto execute_with_value(void *) noexcept -> void_continuation* = 0;
+};
+
+struct void_continuation : void_value_provider {
+  virtual ~void_continuation() = default;
+  virtual auto execute_with_value_from(void_value_provider *) noexcept -> void_continuation* = 0;
 };
 
 template <typename T>
@@ -55,21 +59,15 @@ template <typename Tag, typename T>
 struct continuation_start;
 template <typename Tag, typename T, typename F, typename R>
 struct continuation_step;
-template <typename T, typename F, typename>
+template <typename Tag, typename T, typename F, typename>
 struct continuation_final;
 
-template<typename Tag, typename T>
-void resolve_continuations_iteratively(continuation_base<Tag, T>* base, void_continuation *first) {
-  void_continuation *next = first->execute_with_value(base->ptr());
-  base->destroy();
-  detail::tag_trait_helper<Tag>::release(base);
-  void_continuation *current = first;
-
+template<typename Tag>
+void resolve_continuations_iteratively(void_value_provider* base, void_continuation *first) {
+  void_value_provider *current = base;
+  void_continuation *next = first;
   while (next != nullptr) {
-    void *value = current->get_value_pointer();
-    void_continuation *next_next = next->execute_with_value(value);
-    current->destroy_value();
-    detail::tag_trait_helper<Tag>::release(current);
+    void_continuation *next_next = next->execute_with_value_from(current);
     current = next;
     next = next_next;
   }
@@ -244,7 +242,7 @@ struct continuation : void_continuation, continuation_rel_base {
   virtual void operator()(T&&) noexcept = 0;
 };
 
-template <typename T, typename F, typename Deleter>
+template <typename Tag, typename T, typename F, typename Deleter>
 struct continuation_final final : continuation<T>,
                                   function_store<F>,
                                   continuation_object_recorder_impl<T, default_tag> {
@@ -266,11 +264,13 @@ struct continuation_final final : continuation<T>,
   auto get_next_pointer() const -> continuation_rel_base* override { return nullptr; };
 #endif
 
-  auto execute_with_value(void *ptr) noexcept -> void_continuation* {
-    T& value = *static_cast<T*>(ptr);
+  auto execute_with_value_from(void_value_provider* provider) noexcept -> void_continuation* override {
+    T& value = *static_cast<T*>(provider->get_value_pointer());
     std::invoke(function_store<F>::function_self(),
         std::move(value));
+    provider->destroy_value();
     Deleter{}(this);
+    detail::tag_trait_helper<Tag>::release(provider);
     return nullptr;
   }
 
@@ -279,7 +279,7 @@ struct continuation_final final : continuation<T>,
 };
 
 template <typename Tag, typename T, std::size_t prealloc_size>
-struct continuation_base : memory_buffer<prealloc_size>, box<T>, continuation_object_recorder_impl<T, Tag> {
+struct continuation_base : memory_buffer<prealloc_size>, box<T>, continuation_object_recorder_impl<T, Tag>, void_value_provider {
   template <typename... Args, std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
   explicit continuation_base(std::in_place_t, Args&&... args) noexcept(
       std::is_nothrow_constructible_v<box<T>, std::in_place_t, Args...>)
@@ -305,8 +305,8 @@ struct continuation_base : memory_buffer<prealloc_size>, box<T>, continuation_ob
 #ifdef MELLON_RECORD_PENDING_OBJECTS
   auto get_next_pointer() const -> continuation_rel_base* override { return _next.load(std::memory_order_relaxed); };
 #endif
-  auto get_value_pointer() noexcept -> void* { return box<T>::ptr(); }
-  auto get_next_cont_pointer() noexcept -> void_continuation* { return _next.load(std::memory_order_relaxed); }
+  auto get_value_pointer() noexcept -> void* override { return box<T>::ptr(); }
+  void destroy_value() noexcept override { return box<T>::destroy(); }
 };
 
 template <typename Tag, typename T>
@@ -339,9 +339,11 @@ struct continuation_step final : continuation_base<Tag, R>,
   auto get_value_pointer() noexcept -> void* {
     return continuation_base<Tag, R>::ptr();
   }
-  auto execute_with_value(void* ptr) noexcept -> void_continuation* override {
-    T& value = *static_cast<T*>(ptr);
+  auto execute_with_value_from(void_value_provider *provider) noexcept -> void_continuation* override {
+    T& value = *static_cast<T*>(provider->get_value_pointer());
     box<R>::emplace(std::invoke(function_store<F>::function_self(), std::move(value)));
+    provider->destroy_value();
+    detail::tag_trait_helper<Tag>::release(provider);
     continuation<R>* expected = nullptr;
     bool success =
         this->_next.compare_exchange_strong(expected,
@@ -466,13 +468,13 @@ void insert_continuation_final(continuation_base<Tag, T>* base, F&& f) noexcept 
 
   // try to emplace the final into the steps local memory
   continuation<T>* cont;
-  void* mem = base->template try_allocate<continuation_final<T, F, deleter_destroy>>();
+  void* mem = base->template try_allocate<continuation_final<Tag, T, F, deleter_destroy>>();
   if (mem != nullptr) {
     cont = new (mem)
-        continuation_final<T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
+        continuation_final<Tag, T, F, deleter_destroy>(std::in_place, std::forward<F>(f));
     FUTURES_INC_ALLOC_COUNTER(number_of_prealloc_usage);
   } else {
-    cont = detail::allocate_frame_noexcept<Tag, continuation_final<T, F, deleter_dealloc<Tag>>>(
+    cont = detail::allocate_frame_noexcept<Tag, continuation_final<Tag, T, F, deleter_dealloc<Tag>>>(
         std::in_place, std::forward<F>(f));
   }
 
