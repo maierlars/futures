@@ -40,6 +40,13 @@ struct handler_helper {
   }
 };
 
+struct void_continuation {
+  virtual ~void_continuation() = default;
+  virtual auto get_value_pointer() noexcept -> void* = 0;
+  virtual void destroy_value() noexcept = 0;
+  virtual auto execute_with_value(void *) noexcept -> void_continuation* = 0;
+};
+
 template <typename T>
 struct continuation;
 template <typename Tag, typename T, std::size_t = tag_trait_helper<Tag>::finally_prealloc_size()>
@@ -50,6 +57,23 @@ template <typename Tag, typename T, typename F, typename R>
 struct continuation_step;
 template <typename T, typename F, typename>
 struct continuation_final;
+
+template<typename Tag, typename T>
+void resolve_continuations_iteratively(continuation_base<Tag, T>* base, void_continuation *first) {
+  void_continuation *next = first->execute_with_value(base->ptr());
+  base->destroy();
+  detail::tag_trait_helper<Tag>::release(base);
+  void_continuation *current = first;
+
+  while (next != nullptr) {
+    void *value = current->get_value_pointer();
+    void_continuation *next_next = next->execute_with_value(value);
+    current->destroy_value();
+    detail::tag_trait_helper<Tag>::release(current);
+    current = next;
+    next = next_next;
+  }
+}
 
 template <typename Tag, typename T, typename... Args,
           std::enable_if_t<std::is_constructible_v<T, Args...>, int> = 0>
@@ -74,7 +98,9 @@ void fulfill_continuation(continuation_base<Tag, T>* base,
                                              std::memory_order_acq_rel,
                                              std::memory_order_acquire)) {
       if (expected != FUTURES_INVALID_POINTER_FUTURE_ABANDONED(T)) {
-        std::invoke(*expected, base->cast_move());
+
+        resolve_continuations_iteratively<Tag>(base, expected);
+        //std::invoke(*expected, base->cast_move());
         // FIXME this is a recursive call. Build this a loop!
       } else {
         detail::tag_trait_helper<Tag>::assert_true(
@@ -82,10 +108,12 @@ void fulfill_continuation(continuation_base<Tag, T>* base,
             "invalid continuation state");
         detail::handler_helper<Tag, T>::abandon_future(base->cast_move(), base->get_backtrace());
         static_assert(std::is_nothrow_destructible_v<T>);
+
+        base->destroy();
+        detail::tag_trait_helper<Tag>::release(base);
       }
 
-      base->destroy();
-      detail::tag_trait_helper<Tag>::release(base);
+
     }
   });
 }
@@ -210,10 +238,9 @@ struct continuation_rel_base {};
 #endif
 
 
-
 template <typename T>
-struct continuation : continuation_rel_base {
-  virtual ~continuation() = default;
+struct continuation : void_continuation, continuation_rel_base {
+  ~continuation() override = default;
   virtual void operator()(T&&) noexcept = 0;
 };
 
@@ -238,6 +265,17 @@ struct continuation_final final : continuation<T>,
 
   auto get_next_pointer() const -> continuation_rel_base* override { return nullptr; };
 #endif
+
+  auto execute_with_value(void *ptr) noexcept -> void_continuation* {
+    T& value = *static_cast<T*>(ptr);
+    std::invoke(function_store<F>::function_self(),
+        std::move(value));
+    Deleter{}(this);
+    return nullptr;
+  }
+
+  void destroy_value() noexcept override { }
+  auto get_value_pointer() noexcept -> void* override { return nullptr; }
 };
 
 template <typename Tag, typename T, std::size_t prealloc_size>
@@ -267,6 +305,8 @@ struct continuation_base : memory_buffer<prealloc_size>, box<T>, continuation_ob
 #ifdef MELLON_RECORD_PENDING_OBJECTS
   auto get_next_pointer() const -> continuation_rel_base* override { return _next.load(std::memory_order_relaxed); };
 #endif
+  auto get_value_pointer() noexcept -> void* { return box<T>::ptr(); }
+  auto get_next_cont_pointer() noexcept -> void_continuation* { return _next.load(std::memory_order_relaxed); }
 };
 
 template <typename Tag, typename T>
@@ -284,20 +324,44 @@ struct continuation_step final : continuation_base<Tag, R>,
       : function_store<F>(std::in_place, std::forward<G>(f)) {}
 
   void operator()(T&& t) noexcept override {
+    abort();
     detail::fulfill_continuation<Tag>(this, std::invoke(function_store<F>::function_self(),
                                                         std::move(t)));
   }
 
 #ifdef MELLON_RECORD_PENDING_OBJECTS
-  auto get_object_recorder_ptr() const -> continuation_object_recorder const * override {
-    return static_cast<continuation_object_recorder const *>(this);
+  auto get_object_recorder_ptr() const -> continuation_object_recorder const* override {
+    return static_cast<continuation_object_recorder const*>(this);
   };
 #endif
-};
+
+  void destroy_value() noexcept { continuation_base<Tag, R>::destroy(); }
+  auto get_value_pointer() noexcept -> void* {
+    return continuation_base<Tag, R>::ptr();
+  }
+  auto execute_with_value(void* ptr) noexcept -> void_continuation* override {
+    T& value = *static_cast<T*>(ptr);
+    box<R>::emplace(std::invoke(function_store<F>::function_self(), std::move(value)));
+    continuation<R>* expected = nullptr;
+    bool success =
+        this->_next.compare_exchange_strong(expected,
+                                            FUTURES_INVALID_POINTER_PROMISE_FULFILLED(R),
+                                            std::memory_order_acq_rel,
+                                            std::memory_order_acquire);
+    if (!success && expected == FUTURES_INVALID_POINTER_FUTURE_ABANDONED(R)) {
+      detail::handler_helper<Tag, R>::abandon_future(this->cast_move(), this->get_backtrace());
+      static_assert(std::is_nothrow_destructible_v<T>);
+      this->destroy();
+      detail::tag_trait_helper<Tag>::release(this);
+      return nullptr;
+    }
+    return expected;
+  }
 
 #ifdef MELLON_RECORD_PENDING_OBJECTS
-auto generate_backtrace_string() noexcept -> std::vector<std::string>;
+  auto generate_backtrace_string() noexcept -> std::vector<std::string>;
 #endif
+};
 
 template <typename Tag, typename T, typename... Args>
 auto allocate_frame_noexcept(Args&&... args) noexcept -> T* {

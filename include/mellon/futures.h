@@ -38,8 +38,9 @@ struct tag_trait<default_tag> {
     }
     template <typename T>
     static void release(T* p) noexcept {
-      p->~T();
-      ::operator delete(p);
+      delete p;
+      //p->~T();
+      //::operator delete(p);
     }
   };
 
