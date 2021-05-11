@@ -38,7 +38,7 @@ TEST(locks, async_lock_test) {
   mutex.unlock();  // now the future should execute by the executor
 
   // this should eventually be resolved
-  std::move(f).await(mellon::yes_i_know_that_this_call_will_block);
+  std::move(f).await();
   ASSERT_TRUE(executed);
   ASSERT_FALSE(mutex.is_locked());
 }
@@ -81,9 +81,9 @@ TEST(locks, async_lock_test2) {
   mutex.unlock();  // now the future should execute by the executor
 
   // this should eventually be resolved
-  std::move(f).await(mellon::yes_i_know_that_this_call_will_block);
+  std::move(f).await();
   //std::cout << "awaited 1" << std::endl;
-  std::move(f2).await(mellon::yes_i_know_that_this_call_will_block);
+  std::move(f2).await();
   //std::cout << "awaited 2" << std::endl;
   ASSERT_EQ(executed, 2);
   ASSERT_FALSE(mutex.is_locked());

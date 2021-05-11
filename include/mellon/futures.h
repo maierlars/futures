@@ -85,7 +85,7 @@ struct tag_trait<default_tag> {
 
 /**
  * Producing end of init_future-chain. When the promise is `fulfilled` the chain
- * of mellon is evaluated.
+ * of futures is evaluated.
  * @tparam T
  */
 template <typename T, typename Tag>
@@ -314,7 +314,7 @@ struct future
  * into a single step to reduce memory and allocation overhead. Is derived from
  * future_base and thus provides all functions that mellon do.
  *
- * The temporary is implicitly convertible to `init_future<T>`.
+ * The temporary is implicitly convertible to `future<T>`.
  * @tparam T Initial value type.
  * @tparam F Temporary function type. Chain of functions that have been applied.
  * @tparam R Result type of the chain.

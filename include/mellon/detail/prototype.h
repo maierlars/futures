@@ -40,7 +40,7 @@ struct FUTURES_EMPTY_BASE future_prototype {
    *
    * @return Returns the result value of type T.
    */
-  T await(yes_i_know_that_this_call_will_block_t) && {
+  T await() && {
     struct data {
       detail::box<T> box;
       bool is_waiting = false, has_value = false;

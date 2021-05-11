@@ -24,7 +24,7 @@ struct future_mutex {
   explicit future_mutex(Executor ex = Executor()) : _executor(std::move(ex)) {}
 
   void lock() {
-    async_lock().await(mellon::yes_i_know_that_this_call_will_block).release();
+    async_lock().await().release();
   }
 
   void unlock() {
