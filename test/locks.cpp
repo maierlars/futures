@@ -1,6 +1,7 @@
 #include "test-helper.h"
 
 #include <mellon/locks.h>
+#include <thread>
 
 TEST(locks, simple_test) {
   mellon::future_mutex<default_test_tag> mutex;
@@ -37,13 +38,23 @@ TEST(locks, async_lock_test) {
   mutex.unlock();  // now the future should execute by the executor
 
   // this should eventually be resolved
-  std::move(f).await(mellon::yes_i_know_that_this_call_will_block);
+  std::move(f).await();
   ASSERT_TRUE(executed);
   ASSERT_FALSE(mutex.is_locked());
 }
 
+
+struct async_executor {
+  template<typename F>
+  void operator()(F&& f) const noexcept {
+    std::thread(std::forward<F>(f)).detach();
+  }
+};
+
+
 TEST(locks, async_lock_test2) {
-  mellon::future_mutex<default_test_tag> mutex;
+  using mutex_type = mellon::future_mutex<default_test_tag, async_executor>;
+  mutex_type mutex;
   mutex.lock();
 
   ASSERT_TRUE(mutex.is_locked());
@@ -51,7 +62,7 @@ TEST(locks, async_lock_test2) {
   std::atomic<int> executed = 0;
   // this should not execute immediately
   auto f = mutex.async_lock().and_then(
-      [&](std::unique_lock<mellon::future_mutex<default_test_tag>>&& lock) noexcept -> std::monostate {
+      [&](std::unique_lock<mutex_type>&& lock) noexcept -> std::monostate {
         EXPECT_TRUE(mutex.is_locked());
         EXPECT_EQ(executed, 0);
         executed = 1;
@@ -59,7 +70,7 @@ TEST(locks, async_lock_test2) {
       }).finalize();
 
   auto f2 = mutex.async_lock().and_then(
-      [&](std::unique_lock<mellon::future_mutex<default_test_tag>>&& lock) noexcept -> std::monostate {
+      [&](std::unique_lock<mutex_type>&& lock) noexcept -> std::monostate {
         EXPECT_TRUE(mutex.is_locked());
         EXPECT_EQ(executed, 1);
         executed = 2;
@@ -70,8 +81,10 @@ TEST(locks, async_lock_test2) {
   mutex.unlock();  // now the future should execute by the executor
 
   // this should eventually be resolved
-  std::move(f).await(mellon::yes_i_know_that_this_call_will_block);
-  std::move(f2).await(mellon::yes_i_know_that_this_call_will_block);
+  std::move(f).await();
+  //std::cout << "awaited 1" << std::endl;
+  std::move(f2).await();
+  //std::cout << "awaited 2" << std::endl;
   ASSERT_EQ(executed, 2);
   ASSERT_FALSE(mutex.is_locked());
 }
